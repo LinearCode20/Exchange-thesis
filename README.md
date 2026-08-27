@@ -1,36 +1,78 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Stock Dashboard
 
-## Getting Started
+A simple Next.js app: pick a ticker, press **Show data**, and get the current
+rate, 6-month history with charts, a next-month trend projection, and earnings
+call material (audio/video links + transcript text).
 
-First, run the development server:
+Built for thesis/educational purposes — **not financial advice**.
+
+## Run it
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000 (Next.js runs its own server — Apache/XAMPP is not
+involved). Press `npm run build && npm start` for a production build.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Features
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **Dropdown** with 15 tickers (AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, AMD,
+  INTC, ADBE, NFLX, QCOM, CSCO, AVGO, PYPL) + submit button
+- **Current day rate** — price, day change, day range, 52-week range, volume
+- **Historical data** — 6 months of daily OHLCV in a chart (1M/3M/6M filter)
+  and a recent-days table
+- **Charts & analysis** — closing-price chart with a **next-month projection**
+  (least-squares trend over the last ~3 months, ±1σ band), current rate card,
+  next-earnings date & estimates
+- **Earnings calls** — latest call date, listen on YouTube, recent stock videos
+  and news, plus full transcript text (see below)
 
-## Learn More
+## Data sources (all free)
 
-To learn more about Next.js, take a look at the following resources:
+| Data | Source | Key needed |
+| --- | --- | --- |
+| Quotes, 6-month history, earnings dates/estimates | Yahoo Finance endpoints | No |
+| Stock videos & news | Yahoo Finance search | No |
+| Earnings-call **audio/video** | YouTube search link (full webcast recordings) | No |
+| Earnings-call **transcript text** | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs) | Free key |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Optional: transcript text
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Create a free API key at financialmodelingprep.com
+2. Put it in `.env.local`:
+   ```
+   FMP_API_KEY=your_key_here
+   ```
+3. Restart `npm run dev`
 
-## Deploy on Vercel
+Without a key everything else works; the transcript card shows setup
+instructions instead.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Structure
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+app/
+  page.tsx              Home page (dropdown + submit + all sections)
+  layout.tsx, globals.css
+  api/stock/route.ts    Quote + 6-month history + projection + earnings date
+  api/earnings/route.ts Transcript + videos/news + YouTube search link
+components/
+  PriceChart.tsx        recharts chart (history + dashed projection)
+  StatCard.tsx          KPI tiles
+  HistoryTable.tsx      recent OHLCV table
+  ForecastCard.tsx      next-month outlook + methodology
+  EarningsPanel.tsx     transcript + audio/video/news
+lib/
+  yahoo.ts              Yahoo fetch helpers (incl. cookie/crumb flow)
+  forecast.ts           linear-regression trend projection
+  types.ts              shared types
+```
+
+## Notes
+
+- The "next month" number is a plain linear-regression trend extended ~21
+  trading days with a ±1σ band — a statistical exercise, not a prediction.
+- Yahoo data can be delayed and endpoints are unofficial; if a request fails,
+  the page shows an error banner — just retry.

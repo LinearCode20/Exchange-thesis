@@ -1,69 +1,227 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import EarningsPanel from "@/components/EarningsPanel";
+import ForecastCard from "@/components/ForecastCard";
+import HistoryTable from "@/components/HistoryTable";
+import PriceChart from "@/components/PriceChart";
+import StatCard from "@/components/StatCard";
+import type { EarningsResponse, StockResponse } from "@/lib/types";
+
+const SYMBOLS = [
+  "AAPL",
+  "MSFT",
+  "NVDA",
+  "AMZN",
+  "GOOGL",
+  "META",
+  "TSLA",
+  "AMD",
+  "INTC",
+  "ADBE",
+  "NFLX",
+  "QCOM",
+  "CSCO",
+  "AVGO",
+  "PYPL",
+];
+
+const money = (v: number, currency = "USD") =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency }).format(v);
 
 export default function Home() {
+  const [symbol, setSymbol] = useState("AAPL");
+  const [stock, setStock] = useState<StockResponse | null>(null);
+  const [earnings, setEarnings] = useState<EarningsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!symbol || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const [stockRes, earningsRes] = await Promise.all([
+        fetch(`/api/stock?symbol=${encodeURIComponent(symbol)}`),
+        fetch(`/api/earnings?symbol=${encodeURIComponent(symbol)}`),
+      ]);
+      const stockJson = await stockRes.json();
+      if (!stockRes.ok) {
+        throw new Error(stockJson?.error ?? "Failed to load stock data.");
+      }
+      setStock(stockJson);
+      setEarnings((await earningsRes.json()) as EarningsResponse);
+    } catch (err) {
+      setStock(null);
+      setEarnings(null);
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const meta = stock?.meta;
+  const lastClose = stock && stock.history.length > 0
+    ? stock.history[stock.history.length - 1].close
+    : 0;
+  const dayChange = meta ? meta.price - meta.previousClose : 0;
+  const dayChangePct =
+    meta && meta.previousClose !== 0 ? (dayChange / meta.previousClose) * 100 : 0;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
+      <header>
+        <h1 className="text-3xl font-semibold tracking-tight">Stock Dashboard</h1>
+        <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+          Current rate, history, trend projection and earnings calls — powered by Yahoo Finance.
+        </p>
+      </header>
+
+      <form onSubmit={handleSubmit} className="mt-6 flex flex-wrap items-center gap-3">
+        <label htmlFor="symbol" className="sr-only">
+          Stock symbol
+        </label>
+        <select
+          id="symbol"
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value)}
+          className="h-11 w-56 rounded-lg px-3 text-sm font-medium"
+          style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink)" }}
+        >
+          {SYMBOLS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={loading}
+          className="h-11 rounded-lg px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+          style={{ background: "var(--accent)" }}
+        >
+          {loading ? "Loading…" : "Show data"}
+        </button>
+      </form>
+
+      {error && (
+        <div
+          className="mt-6 rounded-lg p-4 text-sm"
+          style={{ background: "var(--wash)", border: "1px solid var(--down)", color: "var(--down)" }}
+        >
+          {error}
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+      )}
+
+      {!stock && !loading && !error && (
+        <div
+          className="mt-6 rounded-xl p-10 text-center text-sm"
+          style={{ border: "1px dashed var(--axis)", color: "var(--muted)" }}
+        >
+          Select a ticker above and press{" "}
+          <span style={{ color: "var(--ink)" }}>Show data</span> to see the current rate, charts,
+          historical data and earnings calls.
+        </div>
+      )}
+
+      {loading && (
+        <div
+          className="mt-6 flex items-center gap-3 rounded-xl p-6 text-sm"
+          style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--muted)" }}
+        >
+          <span
+            aria-hidden
+            className="inline-block h-4 w-4 animate-spin rounded-full border-2"
+            style={{ borderColor: "var(--muted)", borderTopColor: "transparent" }}
+          />
+          Fetching {symbol} — price, history, projection and earnings calls…
+        </div>
+      )}
+
+      {stock && meta && (
+        <div className="mt-8 space-y-6">
+          {/* KPI row */}
+          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              label={`${meta.symbol} · current rate`}
+              value={money(meta.price, meta.currency)}
+              delta={dayChangePct}
+              deltaText={`${dayChange >= 0 ? "+" : "−"}${money(Math.abs(dayChange), meta.currency)} (${Math.abs(dayChangePct).toFixed(2)}%)`}
+              sub={`Prev close ${money(meta.previousClose, meta.currency)}`}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <StatCard
+              label="Day range"
+              value={`${money(meta.dayLow, meta.currency)} – ${money(meta.dayHigh, meta.currency)}`}
+              sub={`Volume ${meta.volume.toLocaleString("en-US")}`}
+            />
+            <StatCard
+              label="52-week range"
+              value={`${money(meta.fiftyTwoWeekLow, meta.currency)} – ${money(meta.fiftyTwoWeekHigh, meta.currency)}`}
+              sub={meta.exchangeName}
+            />
+            <StatCard
+              label="Next earnings"
+              value={stock.earnings.nextDate ?? "N/A"}
+              sub={
+                stock.earnings.epsEstimate != null
+                  ? `EPS est. $${stock.earnings.epsEstimate.toFixed(2)}${stock.earnings.isEstimate ? " · date estimated" : ""}`
+                  : undefined
+              }
+            />
+          </section>
+
+          {/* Chart + projection */}
+          <section className="grid gap-4 lg:grid-cols-3">
+            <div
+              className="rounded-xl p-5 lg:col-span-2"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+            >
+              <h2 className="font-semibold">
+                {meta.companyName} — history &amp; trend projection
+              </h2>
+              <div className="mt-3">
+                <PriceChart history={stock.history} forecast={stock.forecast} />
+              </div>
+            </div>
+            <ForecastCard forecast={stock.forecast} lastClose={lastClose} />
+          </section>
+
+          {/* Historical data */}
+          <section
+            className="rounded-xl p-5"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
           >
-            Documentation
-          </a>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="font-semibold">Historical data (most recent)</h2>
+              <span className="text-xs" style={{ color: "var(--muted)" }}>
+                {stock.history.length} trading days loaded · showing latest 12
+              </span>
+            </div>
+            <div className="mt-3">
+              <HistoryTable history={stock.history} />
+            </div>
+          </section>
+
+          {/* Earnings calls + media */}
+          <EarningsPanel
+            data={
+              earnings ?? {
+                videos: [],
+                news: [],
+                youtubeQuery: `${meta.companyName} ${meta.symbol} earnings call`,
+                transcript: null,
+                transcriptAvailable: false,
+              }
+            }
+          />
         </div>
-      </main>
-    </div>
+      )}
+
+      <footer className="mt-10 text-xs" style={{ color: "var(--muted)" }}>
+        Data: Yahoo Finance (may be delayed). Projections are simple statistical trend estimates
+        for education only — not financial advice.
+      </footer>
+    </main>
   );
 }

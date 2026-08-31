@@ -28,6 +28,35 @@ const SYMBOLS = [
 const money = (v: number, currency = "USD") =>
   new Intl.NumberFormat("en-US", { style: "currency", currency }).format(v);
 
+/**
+ * Fetch JSON, turning non-JSON error pages (e.g. the Python backend is not
+ * running and the proxy answers with a plain-text error) into actionable
+ * messages instead of "Unexpected token …" crashes.
+ */
+async function fetchApi<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  const text = await res.text();
+  let body: unknown = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    if (res.status >= 500) {
+      throw new Error(
+        "The Python backend is not reachable. Start it in a second terminal: cd backend, activate the venv, then run: python main.py (see README).",
+      );
+    }
+    throw new Error(`Request failed with HTTP ${res.status}.`);
+  }
+  if (!res.ok) {
+    const message =
+      body && typeof body === "object" && "error" in body
+        ? String((body as { error: unknown }).error)
+        : `Request failed with HTTP ${res.status}.`;
+    throw new Error(message);
+  }
+  return body as T;
+}
+
 export default function Home() {
   const [symbol, setSymbol] = useState("AAPL");
   const [stock, setStock] = useState<StockResponse | null>(null);
@@ -41,16 +70,12 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const [stockRes, earningsRes] = await Promise.all([
-        fetch(`/api/stock?symbol=${encodeURIComponent(symbol)}`),
-        fetch(`/api/earnings?symbol=${encodeURIComponent(symbol)}`),
+      const [stockJson, earningsJson] = await Promise.all([
+        fetchApi<StockResponse>(`/api/stock?symbol=${encodeURIComponent(symbol)}`),
+        fetchApi<EarningsResponse>(`/api/earnings?symbol=${encodeURIComponent(symbol)}`),
       ]);
-      const stockJson = await stockRes.json();
-      if (!stockRes.ok) {
-        throw new Error(stockJson?.error ?? "Failed to load stock data.");
-      }
       setStock(stockJson);
-      setEarnings((await earningsRes.json()) as EarningsResponse);
+      setEarnings(earningsJson);
     } catch (err) {
       setStock(null);
       setEarnings(null);

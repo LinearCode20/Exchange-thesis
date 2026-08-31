@@ -35,6 +35,22 @@ The frontend proxies `/api/*` to the Python server (see `next.config.ts`), so
 the browser only ever uses relative URLs. If a request fails, the page shows
 an error banner — just press **Show data** again.
 
+### Deploying to Vercel
+
+The repo also contains the same backend as **Next.js API routes**
+(`app/api/stock/route.ts`, `app/api/earnings/route.ts`) so the deployed app
+needs no Python process at all:
+
+- **Local development** — `/api/*` is proxied to the Python backend
+  (`backend/main.py`) before the built-in routes are considered.
+- **Production build / Vercel** — the proxy is disabled and the built-in
+  Node routes serve the identical JSON.
+
+To deploy: push the repo to GitHub, import it on
+[vercel.com](https://vercel.com), and deploy — no extra configuration. For
+transcript text, add `FMP_API_KEY` under Project → Settings → Environment
+Variables (everything else works without it).
+
 ## Features
 
 - **Dropdown** (AAPL, MSFT — more can be uncommented in `app/page.tsx`) + submit button
@@ -78,14 +94,18 @@ backend/
 app/
   page.tsx              Home page (dropdown + submit + all sections)
   layout.tsx, globals.css
+  api/stock/route.ts    Production API: quote + history + projection + earnings date
+  api/earnings/route.ts Production API: transcript + videos/news + YouTube link
 components/
   StatCard.tsx          KPI tiles
   HistoryTable.tsx      recent OHLCV table
   ForecastCard.tsx      next-month outlook + methodology
   EarningsPanel.tsx     transcript + audio/video/news
 lib/
+  yahoo.ts              Yahoo helpers used by the production API routes
+  forecast.ts           linear-regression projection used by the production API
   types.ts              shared types
-next.config.ts          proxies /api/* -> http://127.0.0.1:8000
+next.config.ts          dev-only proxy /api/* -> http://127.0.0.1:8000
 ```
 
 ## Notes
@@ -129,6 +149,10 @@ computation; the Next.js app only displays it. The frontend never talks to
 Yahoo/FMP directly — it only calls its own `/api/...` URLs, and the proxy
 forwards them to Python. That is why both terminals from "Run it" must be
 running.
+
+> **Deployed on Vercel** the Python server is not part of the deployment —
+> the identical JSON is served by the Next.js API routes in `app/api/`
+> (the proxy only exists in development). Everything below behaves the same.
 
 ### 1. Selecting a company and submitting
 

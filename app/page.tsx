@@ -4,26 +4,25 @@ import { useState } from "react";
 import EarningsPanel from "@/components/EarningsPanel";
 import ForecastCard from "@/components/ForecastCard";
 import HistoryTable from "@/components/HistoryTable";
-import PriceChart from "@/components/PriceChart";
 import StatCard from "@/components/StatCard";
 import type { EarningsResponse, StockResponse } from "@/lib/types";
 
 const SYMBOLS = [
   "AAPL",
   "MSFT",
-  "NVDA",
-  "AMZN",
-  "GOOGL",
-  "META",
-  "TSLA",
-  "AMD",
-  "INTC",
-  "ADBE",
-  "NFLX",
-  "QCOM",
-  "CSCO",
-  "AVGO",
-  "PYPL",
+  // "NVDA",
+  // "AMZN",
+  // "GOOGL",
+  // "META",
+  // "TSLA",
+  // "AMD",
+  // "INTC",
+  // "ADBE",
+  // "NFLX",
+  // "QCOM",
+  // "CSCO",
+  // "AVGO",
+  // "PYPL",
 ];
 
 const money = (v: number, currency = "USD") =>
@@ -171,36 +170,23 @@ export default function Home() {
             />
           </section>
 
-          {/* Chart + projection */}
+          {/* Historical data + next-month projection */}
           <section className="grid gap-4 lg:grid-cols-3">
             <div
               className="rounded-xl p-5 lg:col-span-2"
               style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
             >
-              <h2 className="font-semibold">
-                {meta.companyName} — history &amp; trend projection
-              </h2>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h2 className="font-semibold">Historical data (most recent)</h2>
+                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                  {stock.history.length} trading days loaded · showing latest 12
+                </span>
+              </div>
               <div className="mt-3">
-                <PriceChart history={stock.history} forecast={stock.forecast} />
+                <HistoryTable history={stock.history} />
               </div>
             </div>
             <ForecastCard forecast={stock.forecast} lastClose={lastClose} />
-          </section>
-
-          {/* Historical data */}
-          <section
-            className="rounded-xl p-5"
-            style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h2 className="font-semibold">Historical data (most recent)</h2>
-              <span className="text-xs" style={{ color: "var(--muted)" }}>
-                {stock.history.length} trading days loaded · showing latest 12
-              </span>
-            </div>
-            <div className="mt-3">
-              <HistoryTable history={stock.history} />
-            </div>
           </section>
 
           {/* Earnings calls + media */}

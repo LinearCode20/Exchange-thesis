@@ -2,6 +2,31 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 const BASE = "https://query1.finance.yahoo.com";
+const TIMEOUT_MS = 10_000;
+
+/**
+ * GET with a hard timeout - on flaky networks a connect can hang for
+ * minutes otherwise; this fails fast so the page can show an error.
+ * One retry, since a dropped or timed-out attempt usually succeeds on retry.
+ */
+async function safeFetch(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  try {
+    return await fetch(url, {
+      headers: { "User-Agent": UA, ...headers },
+      cache: "no-store",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return fetch(url, {
+      headers: { "User-Agent": UA, ...headers },
+      cache: "no-store",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  }
+}
 
 /**
  * Yahoo's quoteSummary endpoint requires a cookie + crumb pair.
@@ -13,19 +38,13 @@ async function getCrumb(): Promise<{ crumb: string; cookie: string }> {
   if (crumbCache) return crumbCache;
 
   // fc.yahoo.com answers 404 but sets the A3 cookie the crumb endpoint needs.
-  const first = await fetch("https://fc.yahoo.com", {
-    headers: { "User-Agent": UA },
-    cache: "no-store",
-  });
+  const first = await safeFetch("https://fc.yahoo.com");
   const cookie = first.headers
     .getSetCookie()
     .map((c) => c.split(";")[0])
     .join("; ");
 
-  const second = await fetch(`${BASE}/v1/test/getcrumb`, {
-    headers: { "User-Agent": UA, Cookie: cookie },
-    cache: "no-store",
-  });
+  const second = await safeFetch(`${BASE}/v1/test/getcrumb`, { Cookie: cookie });
   const crumb = (await second.text()).trim();
 
   if (!crumb || crumb.length > 40) {
@@ -71,9 +90,8 @@ export async function fetchChart(
   range = "6mo",
   interval = "1d",
 ): Promise<YahooChartResult> {
-  const res = await fetch(
+  const res = await safeFetch(
     `${BASE}/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`,
-    { headers: { "User-Agent": UA }, cache: "no-store" },
   );
   if (!res.ok) {
     throw new Error(`Yahoo chart request failed (${res.status})`);
@@ -95,9 +113,9 @@ export async function fetchQuoteSummary(
   modules: string,
 ): Promise<Record<string, unknown> | null> {
   const makeRequest = async (crumb: string) => {
-    const res = await fetch(
+    const res = await safeFetch(
       `${BASE}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}&crumb=${encodeURIComponent(crumb)}`,
-      { headers: { "User-Agent": UA, Cookie: crumbCache?.cookie ?? "" }, cache: "no-store" },
+      { Cookie: crumbCache?.cookie ?? "" },
     );
     return res;
   };
@@ -131,9 +149,8 @@ export interface YahooSearchResult {
 }
 
 export async function fetchSearch(symbol: string): Promise<YahooSearchResult> {
-  const res = await fetch(
+  const res = await safeFetch(
     `${BASE}/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&videosCount=0&quotesCount=2`,
-    { headers: { "User-Agent": UA }, cache: "no-store" },
   );
   if (!res.ok) return { quotes: [], news: [] };
   const json = await res.json();

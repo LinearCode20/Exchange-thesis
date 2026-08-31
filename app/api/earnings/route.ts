@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchQuoteSummary, fetchSearch } from "@/lib/yahoo";
+import { fetchSearch } from "@/lib/yahoo";
+import type { YahooSearchResult } from "@/lib/yahoo";
 import type { EarningsResponse, MediaItem, TranscriptData } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -47,8 +48,12 @@ async function fetchTranscript(symbol: string): Promise<TranscriptData | null> {
     try {
       const res = await fetch(
         `${FMP_BASE}/earning_call_transcript/${encodeURIComponent(symbol)}?quarter=${quarter}&year=${year}&apikey=${key}`,
-        { cache: "no-store" },
+        { cache: "no-store", signal: AbortSignal.timeout(8_000) },
       );
+      if (res.status === 401 || res.status === 403) {
+        // Key rejected - no point trying the other quarters.
+        break;
+      }
       if (!res.ok) continue;
       const json: unknown = await res.json();
       const item = Array.isArray(json) ? (json[0] as FmpTranscript | undefined) : undefined;
@@ -62,7 +67,8 @@ async function fetchTranscript(symbol: string): Promise<TranscriptData | null> {
         };
       }
     } catch {
-      // try the next quarter back
+      // Network unreachable - every further quarter will hit the same wall.
+      break;
     }
   }
   return null;
@@ -79,8 +85,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(cached.data);
   }
 
-  const search = await fetchSearch(symbol);
-  const companyName = search.quotes[0]?.longname ?? search.quotes[0]?.shortname ?? symbol;
+  // News/video lookups are a nice-to-have: on a flaky network this fetch may
+  // fail entirely, and the panel should still render (YouTube search link).
+  let search: YahooSearchResult = { quotes: [], news: [] };
+  try {
+    search = await fetchSearch(symbol);
+  } catch {
+    // keep the empty fallback
+  }
+  // Search can come back empty (network); avoid a "AAPL AAPL" YouTube query.
+  const rawName = search.quotes[0]?.longname ?? search.quotes[0]?.shortname ?? "";
+  const companyName = rawName && rawName !== symbol ? `${rawName} ` : "";
 
   const videos: MediaItem[] = [];
   const news: MediaItem[] = [];
@@ -90,21 +105,10 @@ export async function GET(request: NextRequest) {
     (isVideo ? videos : news).push(item);
   }
 
-  let lastCallDate: string | null = null;
-  try {
-    const summary = await fetchQuoteSummary(symbol, "calendarEvents");
-    const earnings = summary?.calendarEvents as
-      | { earnings?: { earningsCallDate?: { fmt?: string }[] } }
-      | undefined;
-    lastCallDate = earnings?.earnings?.earningsCallDate?.[0]?.fmt ?? null;
-  } catch {
-    // optional
-  }
-
   const body: EarningsResponse = {
     videos: videos.slice(0, 4),
     news: news.slice(0, 5),
-    youtubeQuery: `${companyName} ${symbol} earnings call`,
+    youtubeQuery: `${companyName}${symbol} earnings call`,
     transcript: await fetchTranscript(symbol),
     transcriptAvailable: Boolean(process.env.FMP_API_KEY),
   };

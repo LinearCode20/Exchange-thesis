@@ -43,3 +43,8 @@ next-env.d.ts
 # python backend
 backend/.venv/
 __pycache__/
+
+# claude code / docs
+.claude/
+AGENTS.md
+README.md

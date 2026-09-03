@@ -46,12 +46,6 @@ export default function ForecastCard({
           <dd>Linear trend</dd>
         </div>
       </dl>
-
-      <p className="mt-4 text-xs leading-5" style={{ color: "var(--muted)" }}>
-        Least-squares trend fitted on the last {forecast.windowDays} trading days and extended one
-        month out; the range is ±1σ (≈ {money(forecast.sigma)}) of that fit. A statistical
-        estimate for coursework only — not a market prediction.
-      </p>
     </div>
   );
 }

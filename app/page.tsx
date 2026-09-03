@@ -228,11 +228,6 @@ export default function Home() {
           />
         </div>
       )}
-
-      <footer className="mt-10 text-xs" style={{ color: "var(--muted)" }}>
-        Data: Yahoo Finance (may be delayed). Projections are simple statistical trend estimates
-        for education only — not financial advice.
-      </footer>
     </main>
   );
 }

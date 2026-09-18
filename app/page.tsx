@@ -1,38 +1,37 @@
 "use client";
 
-import { useState } from "react";
-import EarningsPanel from "@/components/EarningsPanel";
-import ForecastCard from "@/components/ForecastCard";
-import HistoryTable from "@/components/HistoryTable";
-import StatCard from "@/components/StatCard";
-import type { EarningsResponse, StockResponse } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Sidebar, { type TabKey } from "@/components/dashboard/Sidebar";
+import KpiRow from "@/components/dashboard/KpiRow";
+import DataAudioCard from "@/components/dashboard/DataAudioCard";
+import { HistoryPredictionChart, FutureChart } from "@/components/dashboard/charts";
+import { MetricsTableCard, PredictionTableCard } from "@/components/dashboard/tables";
+import { AboutTab, DataInfoTab, ModelsTab, PredictionsTab, ResultsTab } from "@/components/dashboard/tabs";
+import { Card } from "@/components/dashboard/ui";
+import { ChevronDownIcon, InfoIcon, LogoMark, RefreshIcon } from "@/components/dashboard/icons";
+import { classifySentiment } from "@/lib/sentiment";
+import type {
+  DatasetIndex,
+  EarningsResponse,
+  QuoteResponse,
+  StockArtifact,
+} from "@/lib/types";
 
-const SYMBOLS = [
-  "AAPL",
-  "MSFT",
-  // "NVDA",
-  // "AMZN",
-  // "GOOGL",
-  // "META",
-  // "TSLA",
-  // "AMD",
-  // "INTC",
-  // "ADBE",
-  // "NFLX",
-  // "QCOM",
-  // "CSCO",
-  // "AVGO",
-  // "PYPL",
+const STOCKS = [
+  { symbol: "AAPL", name: "Apple Inc." },
+  { symbol: "MSFT", name: "Microsoft Corporation" },
+  { symbol: "NVDA", name: "NVIDIA Corporation" },
+  { symbol: "TSLA", name: "Tesla, Inc." },
 ];
 
-const money = (v: number, currency = "USD") =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency }).format(v);
+const PERIOD_DAYS: { key: string; days: number; years: number }[] = [
+  { key: "10y", days: Infinity, years: 10 },
+  { key: "5y", days: 1260, years: 5 },
+  { key: "3y", days: 756, years: 3 },
+  { key: "1y", days: 252, years: 1 },
+];
 
-/**
- * Fetch JSON, turning non-JSON error pages (e.g. the Python backend is not
- * running and the proxy answers with a plain-text error) into actionable
- * messages instead of "Unexpected token …" crashes.
- */
+/** Fetch JSON, turning non-JSON error pages into readable messages. */
 async function fetchApi<T>(url: string): Promise<T> {
   const res = await fetch(url);
   const text = await res.text();
@@ -40,11 +39,6 @@ async function fetchApi<T>(url: string): Promise<T> {
   try {
     body = JSON.parse(text);
   } catch {
-    if (res.status >= 500) {
-      throw new Error(
-        "The Python backend is not reachable. Start it in a second terminal: cd backend, activate the venv, then run: python main.py (see README).",
-      );
-    }
     throw new Error(`Request failed with HTTP ${res.status}.`);
   }
   if (!res.ok) {
@@ -57,182 +51,220 @@ async function fetchApi<T>(url: string): Promise<T> {
   return body as T;
 }
 
+function SelectCard({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <label
+      className="relative block rounded-xl px-4 py-2.5"
+      style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+    >
+      <span className="block text-xs" style={{ color: "var(--muted)" }}>
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full appearance-none bg-transparent pr-7 text-sm font-medium outline-none"
+        style={{ color: "var(--ink)" }}
+      >
+        {children}
+      </select>
+      <span
+        aria-hidden
+        className="pointer-events-none absolute right-3 bottom-3"
+        style={{ color: "var(--muted)" }}
+      >
+        <ChevronDownIcon size={16} />
+      </span>
+    </label>
+  );
+}
+
 export default function Home() {
   const [symbol, setSymbol] = useState("AAPL");
-  const [stock, setStock] = useState<StockResponse | null>(null);
+  const [periodKey, setPeriodKey] = useState("10y");
+  const [tab, setTab] = useState<TabKey>("overview");
+
+  const [data, setData] = useState<StockArtifact | null>(null);
+  const [index, setIndex] = useState<DatasetIndex | null>(null);
+  const [quote, setQuote] = useState<QuoteResponse | null>(null);
   const [earnings, setEarnings] = useState<EarningsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!symbol || loading) return;
+  const load = useCallback(async (sym: string) => {
     setLoading(true);
     setError(null);
     try {
-      const [stockJson, earningsJson] = await Promise.all([
-        fetchApi<StockResponse>(`/api/stock?symbol=${encodeURIComponent(symbol)}`),
-        fetchApi<EarningsResponse>(`/api/earnings?symbol=${encodeURIComponent(symbol)}`),
-      ]);
-      setStock(stockJson);
-      setEarnings(earningsJson);
+      const artifact = await fetchApi<StockArtifact>(`/api/predict?symbol=${encodeURIComponent(sym)}`);
+      setData(artifact);
     } catch (err) {
-      setStock(null);
-      setEarnings(null);
+      setData(null);
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  const meta = stock?.meta;
-  const lastClose = stock && stock.history.length > 0
-    ? stock.history[stock.history.length - 1].close
-    : 0;
-  const dayChange = meta ? meta.price - meta.previousClose : 0;
-  const dayChangePct =
-    meta && meta.previousClose !== 0 ? (dayChange / meta.previousClose) * 100 : 0;
+  useEffect(() => {
+    load(symbol);
+  }, [symbol, load]);
+
+  useEffect(() => {
+    fetchApi<DatasetIndex>("/api/dataset-index").then(setIndex).catch(() => setIndex(null));
+  }, []);
+
+  // Optional, non-blocking side data (failures leave the cards empty).
+  useEffect(() => {
+    setQuote(null);
+    setEarnings(null);
+    fetchApi<QuoteResponse>(`/api/quote?symbol=${symbol}`).then(setQuote).catch(() => setQuote(null));
+    fetchApi<EarningsResponse>(`/api/earnings?symbol=${symbol}`)
+      .then(setEarnings)
+      .catch(() => setEarnings(null));
+  }, [symbol]);
+
+  const period = useMemo(
+    () => PERIOD_DAYS.find((p) => p.key === periodKey) ?? PERIOD_DAYS[0],
+    [periodKey],
+  );
+
+  const audio = useMemo(() => {
+    if (!earnings) return null;
+    const titles = [...earnings.videos, ...earnings.news].map((m) => m.title);
+    return {
+      files: titles.length,
+      hours: titles.length * 2, // a recorded earnings webcast is ~2 hours
+      sentiment: classifySentiment(titles),
+    };
+  }, [earnings]);
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight">Stock Dashboard</h1>
-        <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
-          Current rate, history, trend projection and earnings calls — powered by Yahoo Finance.
-        </p>
-      </header>
-
-      <form onSubmit={handleSubmit} className="mt-6 flex flex-wrap items-center gap-3">
-        <label htmlFor="symbol" className="sr-only">
-          Stock symbol
-        </label>
-        <select
-          id="symbol"
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value)}
-          className="h-11 w-56 rounded-lg px-3 text-sm font-medium"
-          style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink)" }}
-        >
-          {SYMBOLS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        <button
-          type="submit"
-          disabled={loading}
-          className="h-11 rounded-lg px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
-          style={{ background: "var(--accent)" }}
-        >
-          {loading ? "Loading…" : "Show data"}
-        </button>
-      </form>
-
-      {error && (
-        <div
-          className="mt-6 rounded-lg p-4 text-sm"
-          style={{ background: "var(--wash)", border: "1px solid var(--down)", color: "var(--down)" }}
-        >
-          {error}
-        </div>
-      )}
-
-      {!stock && !loading && !error && (
-        <div
-          className="mt-6 rounded-xl p-10 text-center text-sm"
-          style={{ border: "1px dashed var(--axis)", color: "var(--muted)" }}
-        >
-          Select a ticker above and press{" "}
-          <span style={{ color: "var(--ink)" }}>Show data</span> to see the current rate, charts,
-          historical data and earnings calls.
-        </div>
-      )}
-
-      {loading && (
-        <div
-          className="mt-6 flex items-center gap-3 rounded-xl p-6 text-sm"
-          style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--muted)" }}
-        >
+    <div className="min-h-screen">
+      {/* Header */}
+      <header className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 px-4 py-5 sm:px-6">
+        <div className="flex items-center gap-3">
           <span
             aria-hidden
-            className="inline-block h-4 w-4 animate-spin rounded-full border-2"
-            style={{ borderColor: "var(--muted)", borderTopColor: "transparent" }}
-          />
-          Fetching {symbol} — price, history, projection and earnings calls…
+            className="flex h-12 w-12 items-center justify-center rounded-xl"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+          >
+            <LogoMark size={34} />
+          </span>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Stock Prediction Dashboard</h1>
+            <p className="text-sm" style={{ color: "var(--muted)" }}>
+              Baseline: SRNN&ensp;|&ensp;Proposed Models: GRU &amp; LSTM
+            </p>
+          </div>
         </div>
-      )}
+        <div className="flex flex-wrap gap-3">
+          <SelectCard label="Select Stock" value={symbol} onChange={setSymbol}>
+            {STOCKS.map((s) => (
+              <option key={s.symbol} value={s.symbol}>
+                {s.symbol} - {s.name}
+              </option>
+            ))}
+          </SelectCard>
+          {data && (
+            <SelectCard label="Data Period" value={periodKey} onChange={setPeriodKey}>
+              {PERIOD_DAYS.map((p) => {
+                const n = data.history.dates.length;
+                const start =
+                  p.days === Infinity
+                    ? data.history.dates[0]
+                    : data.history.dates[Math.max(0, n - p.days)];
+                return (
+                  <option key={p.key} value={p.key}>
+                    {start} to {data.dataPeriod.end} ({p.years} {p.years === 1 ? "Year" : "Years"})
+                  </option>
+                );
+              })}
+            </SelectCard>
+          )}
+        </div>
+      </header>
 
-      {stock && meta && (
-        <div className="mt-8 space-y-6">
-          {/* KPI row */}
-          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              label={`${meta.symbol} · current rate`}
-              value={money(meta.price, meta.currency)}
-              delta={dayChangePct}
-              deltaText={`${dayChange >= 0 ? "+" : "−"}${money(Math.abs(dayChange), meta.currency)} (${Math.abs(dayChangePct).toFixed(2)}%)`}
-              sub={`Prev close ${money(meta.previousClose, meta.currency)}`}
-            />
-            <StatCard
-              label="Day range"
-              value={`${money(meta.dayLow, meta.currency)} – ${money(meta.dayHigh, meta.currency)}`}
-              sub={`Volume ${meta.volume.toLocaleString("en-US")}`}
-            />
-            <StatCard
-              label="52-week range"
-              value={`${money(meta.fiftyTwoWeekLow, meta.currency)} – ${money(meta.fiftyTwoWeekHigh, meta.currency)}`}
-              sub={meta.exchangeName}
-            />
-            <StatCard
-              label="Next earnings"
-              value={stock.earnings.nextDate ?? "N/A"}
-              sub={
-                stock.earnings.epsEstimate != null
-                  ? `EPS est. $${stock.earnings.epsEstimate.toFixed(2)}${stock.earnings.isEstimate ? " · date estimated" : ""}`
-                  : undefined
-              }
-            />
-          </section>
+      {/* Body */}
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-4 px-4 pb-10 sm:px-6 lg:flex-row">
+        <Sidebar tab={tab} onTab={setTab} />
 
-          {/* Historical data + next-month projection */}
-          <section className="grid gap-4 lg:grid-cols-3">
+        <main className="min-w-0 flex-1 space-y-4">
+          {error && (
             <div
-              className="rounded-xl p-5 lg:col-span-2"
-              style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+              className="flex items-center justify-between gap-3 rounded-xl p-4 text-sm"
+              style={{ background: "var(--surface)", border: "1px solid #fca5a5", color: "#b91c1c" }}
             >
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h2 className="font-semibold">Historical data (most recent)</h2>
-                <span className="text-xs" style={{ color: "var(--muted)" }}>
-                  {stock.history.length} trading days loaded · showing latest 12
-                </span>
-              </div>
-              <div className="mt-3">
-                <HistoryTable history={stock.history} />
-              </div>
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={() => load(symbol)}
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-white"
+                style={{ background: "var(--primary)" }}
+              >
+                <RefreshIcon size={14} /> Retry
+              </button>
             </div>
-            <ForecastCard forecast={stock.forecast} lastClose={lastClose} />
-          </section>
+          )}
 
-          {/* Earnings calls + media */}
-          <EarningsPanel
-            data={
-              earnings ?? {
-                videos: [],
-                news: [],
-                youtubeQuery: `${meta.companyName} ${meta.symbol} earnings call`,
-                transcript: null,
-                transcriptAvailable: false,
-              }
-            }
-          />
-        </div>
-      )}
+          {loading && (
+            <Card className="flex items-center gap-3 text-sm">
+              <span
+                aria-hidden
+                className="inline-block h-4 w-4 animate-spin rounded-full border-2"
+                style={{ borderColor: "var(--muted)", borderTopColor: "transparent" }}
+              />
+              <span style={{ color: "var(--muted)" }}>Loading model results for {symbol}…</span>
+            </Card>
+          )}
 
-      <footer className="mt-10 text-xs" style={{ color: "var(--muted)" }}>
-        Data: Yahoo Finance (may be delayed). Projections are simple statistical trend estimates
-        for education only — not financial advice.
-      </footer>
-    </main>
+          {data && !loading && (
+            <>
+              {tab === "overview" && (
+                <div className="space-y-4">
+                  <KpiRow data={data} audioFiles={audio?.files ?? null} />
+                  <section className="grid gap-4 xl:grid-cols-3">
+                    <div className="xl:col-span-2">
+                      <HistoryPredictionChart data={data} days={period.days} />
+                    </div>
+                    <FutureChart data={data} />
+                  </section>
+                  <section className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+                    <MetricsTableCard metrics={data.metrics} />
+                    <DataAudioCard data={data} audio={audio} />
+                    <PredictionTableCard data={data} />
+                  </section>
+                  <div
+                    className="flex items-start gap-3 rounded-xl p-4 text-sm"
+                    style={{ background: "var(--primary-soft)", border: "1px solid var(--border)" }}
+                  >
+                    <span aria-hidden style={{ color: "var(--primary)" }}>
+                      <InfoIcon size={20} />
+                    </span>
+                    <p>
+                      <strong>Note:</strong> Past performance is not indicative of future results.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {tab === "data" && <DataInfoTab data={data} index={index} quote={quote} />}
+              {tab === "models" && <ModelsTab data={data} />}
+              {tab === "predictions" && <PredictionsTab data={data} />}
+              {tab === "results" && <ResultsTab data={data} index={index} />}
+              {tab === "about" && <AboutTab />}
+            </>
+          )}
+        </main>
+      </div>
+    </div>
   );
 }

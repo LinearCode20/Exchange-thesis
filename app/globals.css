@@ -1,57 +1,19 @@
 @import "tailwindcss";
 
-/* Chart & UI tokens — light values on :root, dark values re-stepped below. */
+/* Light dashboard palette (matches the thesis design mock). */
 :root {
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --muted: #898781;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
-  --wash: rgba(11, 11, 11, 0.04);
-  --s1: #2a78d6; /* series 1 (actual price) */
-  --s2: #eb6834; /* series 2 (projection) */
-  --accent: #2a78d6;
-  --up: #006300;
-  --down: #d03b3b;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --page: #0d0d0d;
-    --surface: #1a1a19;
-    --ink: #ffffff;
-    --ink-2: #c3c2b7;
-    --muted: #898781;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --border: rgba(255, 255, 255, 0.1);
-    --wash: rgba(255, 255, 255, 0.06);
-    --s1: #3987e5;
-    --s2: #d95926;
-    --accent: #3987e5;
-    --up: #0ca30c;
-    --down: #e66767;
-  }
-}
-
-:root[data-theme="dark"] {
-  --page: #0d0d0d;
-  --surface: #1a1a19;
-  --ink: #ffffff;
-  --ink-2: #c3c2b7;
-  --muted: #898781;
-  --grid: #2c2c2a;
-  --axis: #383835;
-  --border: rgba(255, 255, 255, 0.1);
-  --wash: rgba(255, 255, 255, 0.06);
-  --s1: #3987e5;
-  --s2: #d95926;
-  --accent: #3987e5;
-  --up: #0ca30c;
-  --down: #e66767;
+  --page: #f5f7fb;
+  --surface: #ffffff;
+  --ink: #111827;
+  --ink-2: #374151;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --wash: #f9fafb;
+  --primary: #2563eb;
+  --primary-soft: #eff6ff;
+  --srnn: #3b82f6;
+  --gru: #22c55e;
+  --lstm: #ef4444;
 }
 
 body {

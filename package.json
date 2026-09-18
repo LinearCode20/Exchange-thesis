@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "train": "node scripts/train-all.mjs",
+    "check-gradients": "node scripts/check-gradients.mjs",
+    "build-index": "node scripts/build-index.mjs"
   },
   "dependencies": {
     "next": "16.3.3",

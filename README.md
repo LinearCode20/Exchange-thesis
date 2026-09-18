@@ -2,7 +2,7 @@
 
 Compare stock-price prediction models — **SRNN (baseline)** vs **GRU & LSTM
 (proposed)** — on a 10-year daily dataset for four stocks (AAPL, MSFT, NVDA,
-TSLA), with an 80/20 chronological train/test split and a 60-trading-day
+TSLA), with an 80/20 chronological train/test split and a 60-trading-day.
 prediction horizon. Built with Next.js + React + Tailwind + Recharts.
 **Not financial advice** — thesis/educational use only.
 

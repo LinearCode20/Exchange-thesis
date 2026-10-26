@@ -33,6 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# raw earnings-call transcripts (large; the small *.tone.json summaries are committed)
+/data/transcripts/*/
+
 # vercel
 .vercel
 

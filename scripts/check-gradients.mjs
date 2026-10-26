@@ -9,10 +9,10 @@ const EPS = 1e-5;
 const T = 12; // short window keeps the numeric check stable
 const GRAD_KEYS = { Wx: "dWx", Ux: "dUx", b: "db", V: "dV", bv: "dbv" };
 
-function checkModel(name, ModelClass) {
-  const model = new ModelClass(8, mulberry32(7)); // H=8
+function checkModel(name, ModelClass, D) {
+  const model = new ModelClass(8, mulberry32(7), D); // H=8, D features per step
   const wRng = mulberry32(11);
-  const x = Float64Array.from({ length: T }, () => wRng()); // inputs in [0,1] like scaled closes
+  const x = Float64Array.from({ length: T * D }, () => wRng()); // inputs in [0,1] like scaled closes / tone
   const target = 0.6;
 
   const pred = model.forward(x);
@@ -46,10 +46,13 @@ function checkModel(name, ModelClass) {
       }
     }
   }
-  console.log(`${name}: worst relative error ${worst.toExponential(2)} at ${worstAt}`);
+  console.log(`${name} (D=${D}): worst relative error ${worst.toExponential(2)} at ${worstAt}`);
 }
 
-checkModel("SRNN", SRNN);
-checkModel("GRU", GRU);
-checkModel("LSTM", LSTM);
+// D=1: price-only (regression of the original model). D=2: price + transcript tone.
+for (const D of [1, 2]) {
+  checkModel("SRNN", SRNN, D);
+  checkModel("GRU", GRU, D);
+  checkModel("LSTM", LSTM, D);
+}
 console.log("Gradient check complete.");

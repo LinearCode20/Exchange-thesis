@@ -32,6 +32,7 @@ export function DataInfoTab({
             ["Total records", `${fmtInt(data.records)} daily records`],
             ["Input window", `${cfg.window} trading days`],
             ["Prediction horizon", `${cfg.horizon} trading days`],
+            ["Model inputs", data.features === "price+transcript" ? "Close price + earnings-call tone" : "Close price only"],
             ["Baseline model", "SRNN (Simple RNN)"],
             ["Proposed models", "GRU & LSTM"],
           ].map(([k, v]) => (
@@ -81,6 +82,55 @@ export function DataInfoTab({
           <li>MinMax scaling is fitted on the training closes only; test prices are transformed with the same scaler (no data leakage).</li>
           <li>Test metrics are one-step-ahead predictions; the {cfg.horizon}-day forecast is generated iteratively from the last {cfg.window} closes.</li>
         </ul>
+      </Card>
+
+      <Card className="xl:col-span-2">
+        <CardTitle>Earnings-Call Features (tone)</CardTitle>
+        {(data.transcriptCalls ?? []).length === 0 ? (
+          <p className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
+            No earnings-call transcripts are loaded for {data.symbol} yet, so the tone is neutral (0) on every
+            day and the transcript model is effectively price-only.
+          </p>
+        ) : (
+          <>
+            <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+              Each call is scored with a finance word list: tone ∈ [−1, +1] (positive − negative words, relative
+              to all sentiment words). The tone is applied from the trading day <em>after</em> the call and held
+              until the next one, so the model never sees a call before it happened.
+            </p>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead>
+                  <tr style={{ color: "var(--muted)" }}>
+                    {["Quarter", "Call date", "Tone", "Uncertainty", "Date source"].map((h) => (
+                      <th key={h} className="px-2 py-2 text-left font-medium first:pl-0">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data.transcriptCalls ?? []).map((c) => (
+                    <tr key={`${c.year}Q${c.quarter}`} className="border-t" style={{ borderColor: "var(--border)" }}>
+                      <td className="px-2 py-2.5 pl-0 font-semibold">
+                        {c.year} Q{c.quarter}
+                      </td>
+                      <td className="px-2 py-2.5 tabular-nums">{c.callDate}</td>
+                      <td className="px-2 py-2.5 tabular-nums" style={{ color: c.tone >= 0 ? "#059669" : "#dc2626" }}>
+                        {c.tone >= 0 ? "+" : ""}
+                        {c.tone.toFixed(2)}
+                      </td>
+                      <td className="px-2 py-2.5 tabular-nums">{(c.uncertainty * 100).toFixed(2)}%</td>
+                      <td className="px-2 py-2.5" style={{ color: "var(--muted)" }}>
+                        {c.dateSource === "response" ? "from source" : "estimated (quarter end + 45 days)"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </Card>
 
       <Card className="xl:col-span-2">
@@ -224,6 +274,48 @@ export function ResultsTab({
   return (
     <div className="space-y-4">
       <MetricsTableCard metrics={data.metrics} />
+      {data.metricsPriceOnly && (
+        <Card>
+          <CardTitle>Does the Earnings-Call Tone Help? (ablation, R² on test set)</CardTitle>
+          <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+            Same models, same split and hyperparameters — only the input differs. Positive Δ means the transcript
+            feature improved the test fit.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[520px] text-sm">
+              <thead>
+                <tr style={{ color: "var(--muted)" }}>
+                  {["Model", "Price only", "Price + transcript", "Δ R²"].map((h) => (
+                    <th key={h} className="px-2 py-2 text-left font-medium first:pl-0">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(["srnn", "gru", "lstm"] as const).map((k) => {
+                  const withT = data.metrics[k].r2;
+                  const onlyP = data.metricsPriceOnly![k].r2;
+                  const delta = withT - onlyP;
+                  return (
+                    <tr key={k} className="border-t" style={{ borderColor: "var(--border)" }}>
+                      <td className="px-2 py-2.5 pl-0 font-semibold" style={{ color: MODEL_COLORS[k] }}>
+                        {MODEL_LABELS[k]}
+                      </td>
+                      <td className="px-2 py-2.5 tabular-nums">{onlyP.toFixed(3)}</td>
+                      <td className="px-2 py-2.5 tabular-nums">{withT.toFixed(3)}</td>
+                      <td className="px-2 py-2.5 tabular-nums" style={{ color: delta >= 0 ? "#059669" : "#dc2626" }}>
+                        {delta >= 0 ? "+" : ""}
+                        {delta.toFixed(3)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
       <TestSetChart data={data} />
       {index && (
         <Card>
@@ -276,13 +368,15 @@ export function AboutTab() {
             <strong> Simple Recurrent Neural Network (SRNN)</strong> as the baseline against two proposed
             architectures, <strong>GRU</strong> and <strong>LSTM</strong>. Each model is trained on 10
             years of daily closes for four stocks (AAPL, MSFT, NVDA, TSLA), selected for high intraday
-            volatility and strong long-run price fluctuations.
+            volatility and strong long-run price fluctuations. The primary models also receive an
+            earnings-call tone score derived from each quarter&apos;s call transcript.
           </p>
           <p>
-            Pipeline: fetch 10 years of daily data → chronological 80/20 train/test split → MinMax
-            scaling fitted on the training segment only → train each model with a sliding 60-day input
-            window (identical hyperparameters) → evaluate one-step-ahead predictions on the test segment
-            (RMSE, MAE, MAPE, R²) → generate the 60-trading-day forecast iteratively.
+            Pipeline: fetch 10 years of daily data and earnings-call transcripts → score each call&apos;s tone →
+            chronological 80/20 train/test split → MinMax scaling fitted on the training segment only → train
+            each model with a sliding 60-day input window (identical hyperparameters), once on price only and
+            once on price + tone → evaluate one-step-ahead predictions on the test segment (RMSE, MAE, MAPE,
+            R²) → generate the 60-trading-day forecast iteratively.
           </p>
           <p>
             Training runs offline via <code>npm run train</code> (scripts/train-models.mjs — pure

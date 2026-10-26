@@ -6,6 +6,13 @@
  *   - GRU                — proposed
  *   - LSTM               — proposed
  *
+ * Two feature sets are trained for every stock (ablation):
+ *   - price            : input per day = [scaled close]                (D = 1)
+ *   - price+transcript : input per day = [scaled close, earnings tone] (D = 2)
+ * The tone comes from earnings-call transcripts (data/transcripts/<SYMBOL>.tone.json,
+ * built by scripts/build-tone.mjs). It is forward-filled from the trading day
+ * AFTER each call, so no future information leaks into the features.
+ *
  * Protocol: chronological 80/20 train/test split, MinMax scaling fitted on
  * the TRAIN segment only (no leakage), sliding window of 60 trading days →
  * next-day close. Test metrics (RMSE / MAE / MAPE / R²) are one-step-ahead
@@ -16,18 +23,20 @@
  * what the dashboard serves via /api/predict.
  *
  * Usage:
- *   node scripts/train-models.mjs                     # all stocks, defaults
+ *   node scripts/train-models.mjs                     # all stocks, both feature sets
  *   node scripts/train-models.mjs --stock AAPL        # one stock
+ *   node scripts/train-models.mjs --features price    # price-only run (skip transcript run)
  *   node scripts/train-models.mjs --epochs 2 --stock AAPL   # smoke test
  */
 
-import { writeFileSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT_DIR = path.join(ROOT, "data", "results");
+const TRANSCRIPT_DIR = path.join(ROOT, "data", "transcripts");
 
 // ---------------------------------------------------------------- config --
 
@@ -50,6 +59,9 @@ const STOCKS = [
   { symbol: "TSLA", name: "Tesla, Inc." },
 ];
 
+/** Input features per time step → input dimension D. */
+const FEATURE_DIMS = { price: 1, "price+transcript": 2 };
+
 // ------------------------------------------------------------------ args --
 
 const args = process.argv.slice(2);
@@ -67,6 +79,14 @@ if (stocks.length === 0) {
   console.error(`Unknown stock "${ONLY_STOCK}". Options: ${STOCKS.map((s) => s.symbol).join(", ")}`);
   process.exit(1);
 }
+
+/** Feature sets to train: both by default (ablation), or one via --features. */
+const FEATURE_FILTER = argValue("--features");
+if (FEATURE_FILTER && !(FEATURE_FILTER in FEATURE_DIMS)) {
+  console.error(`Unknown --features "${FEATURE_FILTER}". Options: ${Object.keys(FEATURE_DIMS).join(", ")}`);
+  process.exit(1);
+}
+const FEATURE_KEYS = FEATURE_FILTER ? [FEATURE_FILTER] : Object.keys(FEATURE_DIMS);
 
 /** Distinct init seeds so the three models don't share an RNG stream. */
 const MODEL_SEED_OFFSET = { srnn: 101, gru: 202, lstm: 303 };
@@ -96,6 +116,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function round(v, dp) {
   const f = 10 ** dp;
   return Math.round(v * f) / f;
+}
+
+/** Rounds a prediction series to 2 dp; null when that architecture was not trained (--kinds). */
+function roundSeries(arr) {
+  return arr ? arr.map((v) => round(v, 2)) : null;
 }
 
 function isoDate(tsSeconds) {
@@ -160,6 +185,44 @@ function buildSeries(chart) {
   return rows;
 }
 
+/** Earnings-call tone calls for a stock (empty array if build-tone has not run). */
+function loadCalls(symbol) {
+  const file = path.join(TRANSCRIPT_DIR, `${symbol}.tone.json`);
+  if (!existsSync(file)) return [];
+  return JSON.parse(readFileSync(file, "utf8")).calls ?? [];
+}
+
+/**
+ * Per-trading-day tone. A call dated D only affects trading days strictly after D
+ * (the market has to see the results first), and the value is held until the next call.
+ * Days before the first call are neutral (0).
+ */
+function dailyTone(dates, calls) {
+  const out = new Float64Array(dates.length);
+  const sorted = [...calls].sort((a, b) => a.callDate.localeCompare(b.callDate));
+  let current = 0;
+  let j = 0;
+  for (let i = 0; i < dates.length; i++) {
+    while (j < sorted.length && sorted[j].callDate < dates[i]) {
+      current = sorted[j].tone;
+      j += 1;
+    }
+    out[i] = current;
+  }
+  return out;
+}
+
+/** Feature matrix, flat: row i = [scaled close] (D=1) or [scaled close, tone] (D=2). */
+function buildFeatures(closesScaled, tone, D) {
+  const n = closesScaled.length;
+  const feat = new Float64Array(n * D);
+  for (let i = 0; i < n; i++) {
+    feat[i * D] = closesScaled[i];
+    if (D === 2) feat[i * D + 1] = tone[i];
+  }
+  return feat;
+}
+
 // ------------------------------------------------------------- modeling --
 
 /** Adam optimizer with global-gradient-norm clipping. */
@@ -215,15 +278,22 @@ function initWeights(len, fanIn, fanOut, rng, scale = 1) {
   return w;
 }
 
+/*
+ * Every model takes an input window as a flat Float64Array of length T·D
+ * (D = features per step; row t = x[t·D .. t·D+D-1]). Gate rows of Wx are
+ * indexed as row·D + d, where row = gate·H + unit.
+ */
+
 /**
  * SRNN — Simple RNN (Elman network), the baseline.
  *   h_t = tanh(Wx·x_t + Uh·h_{t-1} + b)
  * Output: y = V·h_T + bv.
  */
 class SRNN {
-  constructor(H, rng) {
+  constructor(H, rng, D = 1) {
     this.H = H;
-    this.Wx = initWeights(H, 1, H, rng); // input is a scalar close price
+    this.D = D;
+    this.Wx = initWeights(H * D, D, H, rng); // input is D features per step
     // Near-zero recurrent + damped output init (IRNN-style): a vanilla tanh
     // RNN with full Glorot recurrence saturates over a 60-step window and
     // collapses to a mean predictor. Starting U small keeps units in the
@@ -234,7 +304,7 @@ class SRNN {
     this.b = new Float64Array(H);
     this.V = initWeights(H, H, 1, rng, 0.5);
     this.bv = new Float64Array(1);
-    this.dWx = new Float64Array(H);
+    this.dWx = new Float64Array(H * D);
     this.dUx = new Float64Array(H * H);
     this.db = new Float64Array(H);
     this.dV = new Float64Array(H);
@@ -247,16 +317,18 @@ class SRNN {
     this.opt = new Adam([this.Wx, this.Ux, this.b, this.V, this.bv], [this.dWx, this.dUx, this.db, this.dV, this.dbv]);
   }
 
-  /** x: Float64Array of window scalars → predicted (scaled) close. */
+  /** x: flat window of T·D features → predicted (scaled) close. */
   forward(x) {
-    const { H, hCache, hprev } = this;
-    const T = x.length;
+    const { H, D, hCache, hprev } = this;
+    const T = x.length / D;
     hprev.fill(0);
     for (let t = 0; t < T; t++) {
-      const xt = x[t];
+      const xo = t * D;
       const hc = t * H;
       for (let j = 0; j < H; j++) {
-        let s = this.Wx[j] * xt + this.b[j];
+        let s = 0;
+        for (let d = 0; d < D; d++) s += this.Wx[j * D + d] * x[xo + d];
+        s += this.b[j];
         const ur = j * H;
         for (let m = 0; m < H; m++) s += this.Ux[ur + m] * hprev[m];
         hCache[hc + j] = Math.tanh(s);
@@ -271,8 +343,8 @@ class SRNN {
 
   /** dOut: dLoss/dPred. Accumulates into the grad arrays. */
   backward(x, dOut) {
-    const { H, hCache, dh, dpre } = this;
-    const T = x.length;
+    const { H, D, hCache, dh, dpre } = this;
+    const T = x.length / D;
     for (let j = 0; j < H; j++) {
       this.dV[j] += dOut * hCache[(T - 1) * H + j];
       dh[j] = dOut * this.V[j];
@@ -280,19 +352,19 @@ class SRNN {
     this.dbv[0] += dOut;
     for (let t = T - 1; t >= 0; t--) {
       const hc = t * H;
+      const xo = t * D;
       const hprev = t > 0 ? hCache.subarray((t - 1) * H, t * H) : null;
       for (let j = 0; j < H; j++) {
         const h = hCache[hc + j];
         dpre[j] = dh[j] * (1 - h * h);
       }
-      const xt = x[t];
       // h_{t-1} feeds only step t, so the fresh gradient is Uᵀ·dpre_t —
       // the stale dh from step t+1 must be discarded, not added to.
       dh.fill(0);
       for (let j = 0; j < H; j++) {
         const dp = dpre[j];
         this.db[j] += dp;
-        this.dWx[j] += dp * xt;
+        for (let d = 0; d < D; d++) this.dWx[j * D + d] += dp * x[xo + d];
         const ur = j * H;
         for (let m = 0; m < H; m++) {
           this.dUx[ur + m] += dp * (hprev ? hprev[m] : 0);
@@ -309,15 +381,16 @@ class SRNN {
  *   h_t = o⊙tanh(c_t). Full BPTT through the window.
  */
 class LSTM {
-  constructor(H, rng) {
+  constructor(H, rng, D = 1) {
     this.H = H;
+    this.D = D;
     const G = 4; // i, f, o, g
-    this.Wx = initWeights(G * H, 1, G * H, rng);
+    this.Wx = initWeights(G * H * D, D, G * H, rng);
     this.Ux = initWeights(G * H * H, G * H, H, rng, 0.5);
     this.b = new Float64Array(G * H);
     this.V = initWeights(H, H, 1, rng);
     this.bv = new Float64Array(1);
-    this.dWx = new Float64Array(G * H);
+    this.dWx = new Float64Array(G * H * D);
     this.dUx = new Float64Array(G * H * H);
     this.db = new Float64Array(G * H);
     this.dV = new Float64Array(H);
@@ -338,21 +411,24 @@ class LSTM {
   }
 
   forward(x) {
-    const { H, hCache, cCache, aCache, ifogCache, hprev, cprev } = this;
-    const T = x.length;
+    const { H, D, hCache, cCache, aCache, ifogCache, hprev, cprev } = this;
+    const T = x.length / D;
     hprev.fill(0);
     cprev.fill(0);
     for (let t = 0; t < T; t++) {
-      const xt = x[t];
+      const xo = t * D;
       const gc = t * 4 * H;
       // gate pre-activations
       for (let k = 0; k < 4; k++) {
         const gr = k * H;
         for (let j = 0; j < H; j++) {
-          let s = this.Wx[gr + j] * xt + this.b[gr + j];
-          const ur = (gr + j) * H;
+          const row = gr + j;
+          let s = 0;
+          for (let d = 0; d < D; d++) s += this.Wx[row * D + d] * x[xo + d];
+          s += this.b[row];
+          const ur = row * H;
           for (let m = 0; m < H; m++) s += this.Ux[ur + m] * hprev[m];
-          this.dpre[gr + j] = s; // reuse dpre as scratch during forward
+          this.dpre[row] = s; // reuse dpre as scratch during forward
         }
       }
       for (let j = 0; j < H; j++) {
@@ -380,8 +456,8 @@ class LSTM {
   }
 
   backward(x, dOut) {
-    const { H, hCache, cCache, aCache, ifogCache, dh, dcNext, dc, dpre, dhNew } = this;
-    const T = x.length;
+    const { H, D, hCache, cCache, aCache, ifogCache, dh, dcNext, dc, dpre, dhNew } = this;
+    const T = x.length / D;
     for (let j = 0; j < H; j++) {
       this.dV[j] += dOut * hCache[(T - 1) * H + j];
       dh[j] = dOut * this.V[j];
@@ -391,6 +467,7 @@ class LSTM {
     for (let t = T - 1; t >= 0; t--) {
       const hc = t * H;
       const gc = t * 4 * H;
+      const xo = t * D;
       const hprev = t > 0 ? hCache.subarray((t - 1) * H, t * H) : null;
       const cprev = t > 0 ? cCache.subarray((t - 1) * H, t * H) : null;
       for (let j = 0; j < H; j++) {
@@ -415,15 +492,15 @@ class LSTM {
         dpre[3 * H + j] = dg * (1 - g * g);
         dcNext[j] = c * f;
       }
-      const xt = x[t];
       dhNew.fill(0);
       for (let k = 0; k < 4; k++) {
         const gr = k * H;
         for (let j = 0; j < H; j++) {
-          const dp = dpre[gr + j];
-          this.db[gr + j] += dp;
-          this.dWx[gr + j] += dp * xt;
-          const ur = (gr + j) * H;
+          const row = gr + j;
+          const dp = dpre[row];
+          this.db[row] += dp;
+          for (let d = 0; d < D; d++) this.dWx[row * D + d] += dp * x[xo + d];
+          const ur = row * H;
           for (let m = 0; m < H; m++) {
             this.dUx[ur + m] += dp * (hprev ? hprev[m] : 0);
             dhNew[m] += this.Ux[ur + m] * dp;
@@ -441,15 +518,16 @@ class LSTM {
  *   h_t = (1−z)⊙h_{t-1} + z⊙n
  */
 class GRU {
-  constructor(H, rng) {
+  constructor(H, rng, D = 1) {
     this.H = H;
+    this.D = D;
     const G = 3; // z, r, n
-    this.Wx = initWeights(G * H, 1, G * H, rng);
+    this.Wx = initWeights(G * H * D, D, G * H, rng);
     this.Ux = initWeights(G * H * H, G * H, H, rng, 0.5);
     this.b = new Float64Array(G * H);
     this.V = initWeights(H, H, 1, rng);
     this.bv = new Float64Array(1);
-    this.dWx = new Float64Array(G * H);
+    this.dWx = new Float64Array(G * H * D);
     this.dUx = new Float64Array(G * H * H);
     this.db = new Float64Array(G * H);
     this.dV = new Float64Array(H);
@@ -468,27 +546,21 @@ class GRU {
   }
 
   forward(x) {
-    const { H, hCache, zCache, rCache, nCache, hprev } = this;
-    const T = x.length;
+    const { H, D, hCache, zCache, rCache, nCache, hprev } = this;
+    const T = x.length / D;
     hprev.fill(0);
     for (let t = 0; t < T; t++) {
-      const xt = x[t];
+      const xo = t * D;
       for (let j = 0; j < H; j++) {
         // gates z and r (vector-valued; r gates h element-wise below)
-        let sz = this.Wx[j] * xt + this.b[j];
-        let sr = this.Wx[H + j] * xt + this.b[H + j];
-        const uzr = j * H;
-        for (let m = 0; m < H; m++) {
-          sz += this.Ux[uzr + m] * hprev[m];
-          sr += this.Ux[(H + j) * H + m] * hprev[m];
+        let sz = 0;
+        let sr = 0;
+        for (let d = 0; d < D; d++) {
+          sz += this.Wx[j * D + d] * x[xo + d];
+          sr += this.Wx[(H + j) * D + d] * x[xo + d];
         }
-        zCache[t * H + j] = sigmoid(sz);
-        rCache[t * H + j] = sigmoid(sr);
-      }
-      for (let j = 0; j < H; j++) {
-        // gates z and r (vector-valued; r gates h element-wise below)
-        let sz = this.Wx[j] * xt + this.b[j];
-        let sr = this.Wx[H + j] * xt + this.b[H + j];
+        sz += this.b[j];
+        sr += this.b[H + j];
         const uzr = j * H;
         for (let m = 0; m < H; m++) {
           sz += this.Ux[uzr + m] * hprev[m];
@@ -499,7 +571,9 @@ class GRU {
       }
       for (let j = 0; j < H; j++) {
         // candidate: pre_n[j] = Wn·x + Un·(r ⊙ h) + bn
-        let sn = this.Wx[2 * H + j] * xt + this.b[2 * H + j];
+        let sn = 0;
+        for (let d = 0; d < D; d++) sn += this.Wx[(2 * H + j) * D + d] * x[xo + d];
+        sn += this.b[2 * H + j];
         const unr = (2 * H + j) * H;
         for (let m = 0; m < H; m++) sn += this.Ux[unr + m] * (rCache[t * H + m] * hprev[m]);
         nCache[t * H + j] = Math.tanh(sn);
@@ -518,8 +592,8 @@ class GRU {
   }
 
   backward(x, dOut) {
-    const { H, hCache, zCache, rCache, nCache, dh, dhNew, drh, dpre } = this;
-    const T = x.length;
+    const { H, D, hCache, zCache, rCache, nCache, dh, dhNew, drh, dpre } = this;
+    const T = x.length / D;
     for (let j = 0; j < H; j++) {
       this.dV[j] += dOut * hCache[(T - 1) * H + j];
       dh[j] = dOut * this.V[j];
@@ -527,6 +601,7 @@ class GRU {
     this.dbv[0] += dOut;
     for (let t = T - 1; t >= 0; t--) {
       const hc = t * H;
+      const xo = t * D;
       const hprev = t > 0 ? hCache.subarray((t - 1) * H, t * H) : null;
       const z = zCache.subarray(hc, hc + H);
       const r = rCache.subarray(hc, hc + H);
@@ -535,7 +610,6 @@ class GRU {
       for (let j = 0; j < H; j++) {
         dpre[2 * H + j] = dh[j] * z[j] * (1 - n[j] * n[j]); // dpre_n
       }
-      const xt = x[t];
       // dh_{t-1} = (1-z)⊙dh_t + Uᵀ terms; the z⊙n path already went into dn,
       // so starting from dh itself would double-count it.
       dhNew.fill(0);
@@ -544,7 +618,7 @@ class GRU {
       for (let j = 0; j < H; j++) {
         const dpn = dpre[2 * H + j];
         this.db[2 * H + j] += dpn;
-        this.dWx[2 * H + j] += dpn * xt;
+        for (let d = 0; d < D; d++) this.dWx[(2 * H + j) * D + d] += dpn * x[xo + d];
         const unr = (2 * H + j) * H;
         for (let m = 0; m < H; m++) {
           const rh = r[m] * (hprev ? hprev[m] : 0);
@@ -566,10 +640,11 @@ class GRU {
       for (let k = 0; k < 2; k++) {
         const gr = k * H;
         for (let j = 0; j < H; j++) {
-          const dp = dpre[gr + j];
-          this.db[gr + j] += dp;
-          this.dWx[gr + j] += dp * xt;
-          const ur = (gr + j) * H;
+          const row = gr + j;
+          const dp = dpre[row];
+          this.db[row] += dp;
+          for (let d = 0; d < D; d++) this.dWx[row * D + d] += dp * x[xo + d];
+          const ur = row * H;
           for (let m = 0; m < H; m++) {
             this.dUx[ur + m] += dp * (hprev ? hprev[m] : 0);
             dhNew[m] += this.Ux[ur + m] * dp;
@@ -581,10 +656,10 @@ class GRU {
   }
 }
 
-function makeModel(kind, rng) {
-  if (kind === "srnn") return new SRNN(CONFIG.hidden, rng);
-  if (kind === "gru") return new GRU(CONFIG.hidden, rng);
-  return new LSTM(CONFIG.hidden, rng);
+function makeModel(kind, rng, D) {
+  if (kind === "srnn") return new SRNN(CONFIG.hidden, rng, D);
+  if (kind === "gru") return new GRU(CONFIG.hidden, rng, D);
+  return new LSTM(CONFIG.hidden, rng, D);
 }
 
 /** One epoch of shuffled mini-batch SGD (Adam) over the training windows. */
@@ -641,15 +716,16 @@ function computeMetrics(actual, preds) {
 
 // ------------------------------------------------------------- pipeline --
 
-function trainOneModel(kind, closesScaled, trainEnd, seed) {
+/** Trains one architecture on the feature matrix `feat` (D values per day). */
+function trainOneModel(kind, feat, D, trainEnd, seed) {
   const W = CONFIG.window;
   const rng = mulberry32(seed);
-  const model = makeModel(kind, rng);
+  const model = makeModel(kind, rng, D);
   const xs = [];
   const ys = [];
   for (let i = W; i < trainEnd; i++) {
-    xs.push(closesScaled.slice(i - W, i));
-    ys.push(closesScaled[i]);
+    xs.push(feat.slice((i - W) * D, i * D));
+    ys.push(feat[i * D]); // target = scaled close of day i
   }
   const order = xs.map((_, i) => i);
   const epochRng = mulberry32(seed + 1);
@@ -663,32 +739,67 @@ function trainOneModel(kind, closesScaled, trainEnd, seed) {
   return model;
 }
 
-function predictSeries(model, closesScaled, fromIdx, toIdx) {
+function predictSeries(model, feat, D, fromIdx, toIdx) {
   const W = CONFIG.window;
   const out = [];
   for (let i = fromIdx; i < toIdx; i++) {
-    out.push(model.forward(closesScaled.subarray(i - W, i)));
+    out.push(model.forward(feat.subarray((i - W) * D, i * D)));
   }
   return out;
 }
 
-function forecastFuture(model, closesScaled, min, max) {
+/**
+ * Iterative 60-day forecast. The close part of the window is replaced by each
+ * prediction; the tone part (if any) is held at the last known value, since no
+ * future earnings call is known.
+ */
+function forecastFuture(model, feat, D, min, max) {
   const W = CONFIG.window;
-  const window = closesScaled.slice(closesScaled.length - W);
+  const n = feat.length / D;
+  const window = feat.slice((n - W) * D);
+  const lastTone = D === 2 ? feat[(n - 1) * D + 1] : 0;
   const out = [];
   for (let k = 0; k < CONFIG.horizon; k++) {
     const p = model.forward(window);
     out.push(p * (max - min) + min);
-    window.copyWithin(0, 1);
-    window[W - 1] = p;
+    window.copyWithin(0, D);
+    window[(W - 1) * D] = p;
+    if (D === 2) window[(W - 1) * D + 1] = lastTone;
   }
   return out;
+}
+
+/** Trains and evaluates all architectures for one feature set. */
+function runFeatureSet(key, D, closesScaled, tone, trainEnd, min, max, closes, n) {
+  const feat = buildFeatures(closesScaled, tone, D);
+  const models = {};
+  for (const kind of KIND_FILTER) {
+    console.log(`  [${key}] training ${kind.toUpperCase()}…`);
+    const t0 = Date.now();
+    models[kind] = trainOneModel(kind, feat, D, trainEnd, CONFIG.seed + MODEL_SEED_OFFSET[kind]);
+    console.log(`    done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  }
+
+  // test-set one-step-ahead predictions (inverse-scaled)
+  const testActual = closes.slice(trainEnd);
+  const testPreds = {};
+  const metrics = {};
+  const future = {};
+  for (const kind of Object.keys(models)) {
+    const scaled = predictSeries(models[kind], feat, D, trainEnd, n);
+    testPreds[kind] = scaled.map((p) => p * (max - min) + min);
+    metrics[kind] = computeMetrics(testActual, testPreds[kind]);
+    const m = metrics[kind];
+    console.log(`  [${key}] ${kind.toUpperCase()}  RMSE ${m.rmse}  MAE ${m.mae}  MAPE ${m.mape}%  R² ${m.r2}`);
+    future[kind] = forecastFuture(models[kind], feat, D, min, max).map((v) => round(v, 2));
+  }
+  return { metrics, testActual, testPreds, future };
 }
 
 async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
   console.log(
-    `Training SRNN (baseline) vs GRU & LSTM (proposed) — window ${CONFIG.window}, hidden ${CONFIG.hidden}, epochs ${CONFIG.epochs}, split ${CONFIG.splitPct}/${100 - CONFIG.splitPct}`,
+    `Training SRNN (baseline) vs GRU & LSTM (proposed) — window ${CONFIG.window}, hidden ${CONFIG.hidden}, epochs ${CONFIG.epochs}, split ${CONFIG.splitPct}/${100 - CONFIG.splitPct}, features: ${FEATURE_KEYS.join(" | ")}`,
   );
   const index = [];
   for (const stock of stocks) {
@@ -705,7 +816,7 @@ async function main() {
   console.log(`\nAll done — ${index.length} stock(s) trained. Artifacts in data/results/.`);
 }
 
-/** Per-stock pipeline: fetch → split → scale → train ×3 → evaluate → write. */
+/** Per-stock pipeline: fetch → split → scale → tone → train ×3 per feature set → evaluate → write. */
 async function processStock({ symbol, name }) {
   console.log(`\n=== ${symbol} — ${name} ===`);
   console.log("  fetching 10y daily chart from Yahoo Finance…");
@@ -731,43 +842,27 @@ async function processStock({ symbol, name }) {
     `  split: train ${trainEnd} (${dates[0]} → ${dates[trainEnd - 1]}), test ${n - trainEnd} (${dates[trainEnd]} → ${dates[n - 1]})`,
   );
 
-  const models = {};
-  for (const kind of KIND_FILTER) {
-    console.log(`  training ${kind.toUpperCase()}…`);
-    const t0 = Date.now();
-    models[kind] = trainOneModel(kind, closesScaled, trainEnd, CONFIG.seed + MODEL_SEED_OFFSET[kind]);
-    console.log(`    done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  }
+  // Earnings-call tone, forward-filled per trading day (neutral before the first call).
+  const calls = loadCalls(symbol);
+  const tone = dailyTone(dates, calls);
+  console.log(`  transcript calls available: ${calls.length}`);
 
-  // ---- test-set one-step-ahead predictions (inverse-scaled) ----
-  const testActual = closes.slice(trainEnd);
-  const testPreds = {};
-  for (const kind of Object.keys(models)) {
-    const scaled = predictSeries(models[kind], closesScaled, trainEnd, n);
-    testPreds[kind] = scaled.map((p) => p * (max - min) + min);
+  const runs = {};
+  for (const key of FEATURE_KEYS) {
+    runs[key] = runFeatureSet(key, FEATURE_DIMS[key], closesScaled, tone, trainEnd, min, max, closes, n);
   }
-  const metrics = {};
-  for (const kind of Object.keys(models)) {
-    metrics[kind] = computeMetrics(testActual, testPreds[kind]);
-    const m = metrics[kind];
-    console.log(`  ${kind.toUpperCase()}  RMSE ${m.rmse}  MAE ${m.mae}  MAPE ${m.mape}%  R² ${m.r2}`);
-    if (process.env.DEBUG_PRED) {
-      for (let i = 0; i < 5; i++) {
-        console.log(`    [${kind}] t+${i + 1} pred ${testPreds[kind][i].toFixed(2)}  actual ${testActual[i].toFixed(2)}`);
-      }
-    }
-  }
+  // Primary result = price+transcript when it was trained; price-only is the ablation.
+  const primaryKey = runs["price+transcript"] ? "price+transcript" : "price";
+  const primary = runs[primaryKey];
+  const ablation = runs.price ?? null;
+  const testActual = primary.testActual;
+
   // Persistence reference (pred = yesterday's close) — the bar any model
   // should beat; printed for experiment sanity only.
   const persPreds = closes.slice(trainEnd - 1, n - 1);
   const pers = computeMetrics(testActual, persPreds);
   console.log(`  PERSIST  RMSE ${pers.rmse}  MAE ${pers.mae}  MAPE ${pers.mape}%  R² ${pers.r2}`);
 
-  // ---- iterative 60-trading-day forecast ----
-  const future = {};
-  for (const kind of Object.keys(models)) {
-    future[kind] = forecastFuture(models[kind], closesScaled, min, max).map((v) => round(v, 2));
-  }
   const futureDates = nextTradingDates(dates[n - 1], CONFIG.horizon);
 
   // ---- descriptive stats used for the stock-selection criteria table ----
@@ -788,6 +883,15 @@ async function processStock({ symbol, name }) {
     currency: "USD",
     generatedAt: new Date().toISOString(),
     config: CONFIG,
+    features: primaryKey,
+    transcriptCalls: calls.map((c) => ({
+      year: c.year,
+      quarter: c.quarter,
+      callDate: c.callDate,
+      dateSource: c.dateSource,
+      tone: c.tone,
+      uncertainty: c.uncertainty,
+    })),
     dataPeriod: { start: dates[0], end: dates[n - 1], years: 10 },
     records: n,
     split: {
@@ -803,15 +907,25 @@ async function processStock({ symbol, name }) {
       close: closes.map((v) => round(v, 4)),
       volume: volumes,
     },
-    metrics,
+    metrics: primary.metrics,
     testSeries: {
       dates: dates.slice(trainEnd),
       actual: testActual.map((v) => round(v, 2)),
-      srnn: testPreds.srnn.map((v) => round(v, 2)),
-      gru: testPreds.gru.map((v) => round(v, 2)),
-      lstm: testPreds.lstm.map((v) => round(v, 2)),
+      srnn: roundSeries(primary.testPreds.srnn),
+      gru: roundSeries(primary.testPreds.gru),
+      lstm: roundSeries(primary.testPreds.lstm),
     },
-    future: { dates: futureDates, srnn: future.srnn, gru: future.gru, lstm: future.lstm },
+    future: { dates: futureDates, srnn: primary.future.srnn, gru: primary.future.gru, lstm: primary.future.lstm },
+    // Ablation: same models without the transcript feature (null if --features price+transcript was used).
+    metricsPriceOnly: ablation ? ablation.metrics : null,
+    futurePriceOnly: ablation ? ablation.future : null,
+    testSeriesPriceOnly: ablation
+      ? {
+          srnn: roundSeries(ablation.testPreds.srnn),
+          gru: roundSeries(ablation.testPreds.gru),
+          lstm: roundSeries(ablation.testPreds.lstm),
+        }
+      : null,
     stats,
   };
 
@@ -825,13 +939,15 @@ async function processStock({ symbol, name }) {
     records: n,
     period: { start: dates[0], end: dates[n - 1] },
     split: artifact.split,
-    metrics,
+    features: primaryKey,
+    metrics: primary.metrics,
+    metricsPriceOnly: artifact.metricsPriceOnly,
     stats,
     generatedAt: artifact.generatedAt,
   };
 }
 
-export { SRNN, GRU, LSTM, Adam, initWeights, mulberry32, computeMetrics, CONFIG };
+export { SRNN, GRU, LSTM, Adam, initWeights, mulberry32, computeMetrics, CONFIG, dailyTone, buildFeatures };
 
 // Only run the full pipeline when executed directly (allows gradient-check
 // scripts to import the model classes).

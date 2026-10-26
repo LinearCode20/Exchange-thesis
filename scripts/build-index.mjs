@@ -20,7 +20,9 @@ for (const file of readdirSync(OUT_DIR)) {
     records: a.records,
     period: { start: a.dataPeriod.start, end: a.dataPeriod.end },
     split: a.split,
+    features: a.features ?? "price",
     metrics: a.metrics,
+    metricsPriceOnly: a.metricsPriceOnly ?? null,
     stats: a.stats,
     generatedAt: a.generatedAt,
   });

@@ -164,11 +164,18 @@ in any `data/results/<SYMBOL>.json` (or in `_index.json`).
 
 Each earnings call is turned into one **tone** number in [−1, +1]:
 
-1. `npm run fetch-transcripts` downloads the transcript of every quarter (2016 Q3 →
-   last completed quarter) from Alpha Vantage (`EARNINGS_CALL_TRANSCRIPT`) and caches the raw
-   JSON in `data/transcripts/<SYMBOL>/`. It is resumable and stops when the daily quota is hit.
+1. `npm run fetch-transcripts` downloads the transcript of every **fiscal** quarter (from the
+   first quarter in the 10-year window up to the last reported one) from Alpha Vantage
+   (`EARNINGS_CALL_TRANSCRIPT`) and caches the raw JSON in `data/transcripts/<SYMBOL>/`.
+   Alpha Vantage labels quarters by fiscal year, e.g. NVDA `2024Q1` is the quarter ending April 2023
+   (fiscal years end: AAPL Sep, MSFT Jun, NVDA Jan, TSLA Dec — `scripts/lib/fiscal.mjs`).
+   It is resumable and stops when the free daily quota (25 requests) is hit; about 170 requests are
+   needed for all four stocks, so the full history takes several days.
 2. `npm run build-tone` (also run first by `npm run train`) scores each transcript with a
    finance word list (`scripts/lib/tone.mjs`): `tone = (positive − negative) / (positive + negative)`.
+   Alpha Vantage does not return the call date, so it is estimated as **fiscal quarter end + 45 days**
+   (labelled "estimated" on the Data Info tab). It prints the coverage per stock; train only once
+   coverage is high, because quarters without a transcript count as neutral.
    Result: `data/transcripts/<SYMBOL>.tone.json` (small, committed).
 3. `scripts/train-models.mjs` trains each model twice: **price only** and **price + tone**.
    The tone is applied from the trading day *after* the call and held until the next call,

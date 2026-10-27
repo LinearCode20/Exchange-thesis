@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { scoreTranscript } from "./lib/tone.mjs";
+import { estimatedCallDate, quarterList } from "./lib/fiscal.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const TRANSCRIPT_ROOT = path.join(ROOT, "data", "transcripts");
@@ -35,17 +36,16 @@ function extractText(node) {
   return "";
 }
 
-/** Date of the call. Uses an explicit date when the response has one, else a conservative estimate. */
-function callDateFor(raw, year, quarter) {
+/**
+ * Date of the call. Uses an explicit date when the response has one (Alpha Vantage
+ * currently does not), else the fiscal quarter end + 45 days (see scripts/lib/fiscal.mjs).
+ */
+function callDateFor(raw, symbol, year, quarter) {
   const explicit = raw?.date ?? raw?.transcript_date ?? raw?.callDate;
   if (typeof explicit === "string" && /^\d{4}-\d{2}-\d{2}/.test(explicit)) {
     return { date: explicit.slice(0, 10), source: "response" };
   }
-  // Quarter end + 45 days: results normally come out within ~6 weeks, so this
-  // avoids using a tone before the market could have seen it.
-  const quarterEnd = new Date(Date.UTC(year, quarter * 3, 0)); // last day of quarter
-  quarterEnd.setUTCDate(quarterEnd.getUTCDate() + 45);
-  return { date: quarterEnd.toISOString().slice(0, 10), source: "quarter-end+45d" };
+  return { date: estimatedCallDate(symbol, year, quarter), source: "fiscal-quarter-end+45d" };
 }
 
 function buildSymbol(symbol) {
@@ -62,7 +62,7 @@ function buildSymbol(symbol) {
       continue;
     }
     const { tone, uncertainty, words } = scoreTranscript(text);
-    const { date, source } = callDateFor(cached.raw, cached.year, cached.quarter);
+    const { date, source } = callDateFor(cached.raw, symbol, cached.year, cached.quarter);
     rows.push({
       quarter: cached.quarter,
       year: cached.year,
@@ -81,9 +81,13 @@ function main() {
   mkdirSync(TRANSCRIPT_ROOT, { recursive: true });
   for (const symbol of STOCKS) {
     const { rows, skipped } = buildSymbol(symbol);
+    const expected = quarterList(symbol).length;
     const out = path.join(TRANSCRIPT_ROOT, `${symbol}.tone.json`);
     writeFileSync(out, JSON.stringify({ symbol, generatedAt: new Date().toISOString(), calls: rows }, null, 2));
-    console.log(`${symbol}: ${rows.length} call(s) scored, ${skipped} empty/missing skipped → ${path.relative(ROOT, out)}`);
+    const pct = expected ? Math.round((rows.length / expected) * 100) : 0;
+    console.log(
+      `${symbol}: ${rows.length}/${expected} fiscal quarters scored (${pct}% coverage), ${skipped} empty/missing skipped → ${path.relative(ROOT, out)}`,
+    );
   }
 }
 

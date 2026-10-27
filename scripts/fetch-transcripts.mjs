@@ -17,13 +17,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { quarterList } from "./lib/fiscal.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT_ROOT = path.join(ROOT, "data", "transcripts");
 const STOCKS = ["AAPL", "MSFT", "NVDA", "TSLA"];
-const FIRST_YEAR = 2016;
-const FIRST_QUARTER = 3; // 2016Q3 = first quarter of the 10y window (2016-09 →)
 const SLEEP_MS = 13_000; // Alpha Vantage free tier: ~5 requests/minute
+const RECENT_DAYS = 90; // an empty answer for a call this recent may just be "not published yet"
 
 // ------------------------------------------------------------------ env --
 
@@ -40,28 +40,6 @@ function loadKey() {
   return value || null;
 }
 
-// -------------------------------------------------------------- quarters --
-
-/** Quarters from 2016Q3 up to the last completed quarter, oldest first. */
-function quarterList(now = new Date()) {
-  const curYear = now.getUTCFullYear();
-  const curQ = Math.floor(now.getUTCMonth() / 3) + 1;
-  // The quarter that is still running has no call yet → stop one before it.
-  let year = curQ === 1 ? curYear - 1 : curYear;
-  let q = curQ === 1 ? 4 : curQ - 1;
-  const out = [];
-  for (let y = FIRST_YEAR, qq = FIRST_QUARTER; ; ) {
-    if (y > year || (y === year && qq > q)) break;
-    out.push({ year: y, quarter: qq });
-    qq += 1;
-    if (qq === 5) {
-      qq = 1;
-      y += 1;
-    }
-  }
-  return out;
-}
-
 // ------------------------------------------------------------------ api --
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -74,8 +52,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function classifyNote(json) {
   const msg = `${json?.Information ?? ""} ${json?.Note ?? ""} ${json?.["Error Message"] ?? ""}`.toLowerCase();
   if (!msg.trim()) return null;
-  if (msg.includes("premium")) return "premium";
+  // Quota message also contains "premium plans" (as an upgrade link), so check it first.
   if (msg.includes("rate limit") || msg.includes("per day") || msg.includes("call frequency")) return "quota";
+  if (msg.includes("premium endpoint") || msg.includes("premium api")) return "premium";
   return "other";
 }
 
@@ -105,16 +84,17 @@ async function main() {
     process.exit(1);
   }
 
-  const quarters = quarterList();
   let fetched = 0;
   let cached = 0;
+  const now = new Date();
 
   for (const symbol of stocks) {
     const dir = path.join(OUT_ROOT, symbol);
     mkdirSync(dir, { recursive: true });
-    console.log(`\n=== ${symbol} (${quarters.length} quarters) ===`);
+    const quarters = quarterList(symbol, now); // fiscal labels, as Alpha Vantage uses them
+    console.log(`\n=== ${symbol} (${quarters.length} fiscal quarters) ===`);
 
-    for (const { year, quarter } of quarters) {
+    for (const { year, quarter, callDate } of quarters) {
       const file = path.join(dir, `${year}Q${quarter}.json`);
       if (existsSync(file)) {
         cached += 1;
@@ -135,17 +115,26 @@ async function main() {
       if (note === "premium") {
         console.error(`\n  ${symbol} ${year}Q${quarter}: this endpoint needs a premium Alpha Vantage plan for this key.`);
         console.error("  Stopping. Options: upgrade the plan, or place transcript text manually (see plan).");
-        process.exit(2);
+        throw new StopRun(2);
       }
       if (note === "quota") {
         console.error(`\n  Daily quota reached after ${fetched} request(s) this run (${cached} already cached).`);
         console.error("  Run `node scripts/fetch-transcripts.mjs` again after the quota resets.");
-        process.exit(3);
+        throw new StopRun(3);
       }
 
-      // Save everything else (including "no transcript for this quarter") so it is not re-requested.
+      const hasText = Array.isArray(json?.transcript) && json.transcript.length > 0;
+      const isRecent = Date.parse(callDate) > now.getTime() - RECENT_DAYS * 86_400_000;
+      if (!hasText && isRecent) {
+        // Probably not published yet: don't cache, so the next run asks again.
+        console.log(`  ${year}Q${quarter}  no transcript yet (recent call) — will retry next run`);
+        await sleep(SLEEP_MS);
+        continue;
+      }
+
+      // Save everything else (including old "no transcript" answers) so it is not re-requested.
       writeFileSync(file, JSON.stringify({ symbol, year, quarter, fetchedAt: new Date().toISOString(), raw: json }, null, 2));
-      console.log(`  ${year}Q${quarter}  saved${note === "other" ? "  (API returned a note — check the file)" : ""}`);
+      console.log(`  ${year}Q${quarter}  saved${hasText ? "" : "  (no transcript text)"}${note === "other" ? "  (API returned a note — check the file)" : ""}`);
       await sleep(SLEEP_MS);
     }
   }
@@ -153,7 +142,19 @@ async function main() {
   console.log(`\nDone. ${fetched} request(s) this run, ${cached} already cached. Files in data/transcripts/.`);
 }
 
+/** Thrown to stop with a specific exit code without calling process.exit() (keeps open sockets from aborting Node on Windows). */
+class StopRun extends Error {
+  constructor(code) {
+    super(`stop with exit code ${code}`);
+    this.code = code;
+  }
+}
+
 main().catch((err) => {
+  if (err instanceof StopRun) {
+    process.exitCode = err.code;
+    return;
+  }
   console.error("fetch-transcripts failed:", err);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -122,7 +122,7 @@ export function DataInfoTab({
                       </td>
                       <td className="px-2 py-2.5 tabular-nums">{(c.uncertainty * 100).toFixed(2)}%</td>
                       <td className="px-2 py-2.5" style={{ color: "var(--muted)" }}>
-                        {c.dateSource === "response" ? "from source" : "estimated (quarter end + 45 days)"}
+                        {c.dateSource === "response" ? "from source" : "estimated (fiscal quarter end + 45 days)"}
                       </td>
                     </tr>
                   ))}

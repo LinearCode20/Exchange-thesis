@@ -1,388 +1,240 @@
 # Stock Prediction Dashboard (Thesis)
 
-Compare stock-price prediction models — **SRNN (baseline)** vs **GRU & LSTM
-(proposed)** — on a 10-year daily dataset for four stocks (AAPL, MSFT, NVDA,
-TSLA), with an 80/20 chronological train/test split and a 60-trading-day.
-prediction horizon. Built with Next.js + React + Tailwind + Recharts.
-**Not financial advice** — thesis/educational use only.
+Compares stock-price prediction models — **SRNN (baseline)** vs **GRU & LSTM (proposed)** —
+on 10 years of daily prices for four stocks (AAPL, MSFT, NVDA, TSLA). Each model is
+trained on historical closes, optionally with an **earnings-call tone** score, and
+predicts the next day's close and a 60-trading-day path.
 
-## Run it (Node only — no Python needed)
+Built with Next.js, React, Tailwind and Recharts. **Not financial advice** — thesis and
+educational use only.
+
+---
+
+## Summary
+
+- **What it does:** shows historical prices, model predictions (next day and a 60-day path),
+  metrics, and an ablation that asks whether the earnings-call tone helps.
+- **What the models predict:** the **price level** (next-day close). They do **not** predict
+  direction reliably.
+- **Data:** 10 years of daily closes (Yahoo Finance) plus one **tone** number per fiscal
+  quarter, from earnings-call transcripts (Alpha Vantage).
+- **Results:** GRU is the strongest learned model. Adding the tone helps GRU slightly and hurts
+  LSTM slightly, in single-seed runs. A naive "tomorrow = today" baseline (PERSIST) still beats
+  every model. See [Results](#results).
+- **Status:** all 168 transcripts (4 stocks × 42 fiscal quarters) are cached and the models are
+  retrained with them. Changes are on branch `transcript-tone-model`, not pushed yet.
+
+---
+
+## Quick start
 
 ```bash
 npm install
-npm run dev        # http://localhost:3000
+npm run dev          # http://localhost:3000
 ```
 
-That's it. The models are trained ahead of time and their results are
-committed as JSON artifacts in `data/results/`, which the API routes serve.
-Everything works offline except the optional live rate and earnings media.
+No key is needed to run the dashboard: the trained results are committed in `data/results/`.
 
-### Deploying to Vercel
+## Commands
 
-Push to GitHub and import on [vercel.com](https://vercel.com) — no extra
-configuration. The API routes are serverless functions; the artifacts are
-bundled with them. No API key is needed on Vercel. The Alpha Vantage key
-(`ALPHAVANTAGE_API_KEY`) is only needed on your machine to run
-`npm run fetch-transcripts` / `npm run train`.
+| Command | What it does | Needs |
+| --- | --- | --- |
+| `npm run dev` | Starts the dashboard | — |
+| `npm run build` | Production build | — |
+| `npm run fetch-transcripts` | Downloads earnings-call transcripts (resumable, stops at the daily quota) | `ALPHAVANTAGE_API_KEY` in `.env.local` |
+| `npm run build-tone` | Scores transcripts into one tone number per call; prints coverage | cached transcripts |
+| `npm run train` | Runs `build-tone`, then retrains all four stocks (price-only and price+tone), ~15–20 min | Yahoo access |
+| `npm run check-gradients` | Verifies the hand-written backprop against finite differences (D=1 and D=2) | — |
 
-## The models & experiment
+Before `npm run train`, commit your current `data/results/` (it is overwritten). Train only when
+transcript coverage is high, because a quarter with no transcript counts as a neutral tone.
 
-| | SRNN (Baseline) | GRU (Proposed) | LSTM (Proposed) |
+## How it works
+
+### 1. Two kinds of data
+
+| Layer | When | Data |
+| --- | --- | --- |
+| **Offline (committed)** | Only when you run `npm run train` | `data/results/<SYMBOL>.json`: price history, metrics, test predictions, 60-day forecast. `_index.json`: summary across stocks. |
+| **Live (per request)** | Every time the page loads | Current price from Yahoo (`/api/quote`) and news and video headlines from Yahoo search (`/api/earnings`) |
+
+The dashboard reads the offline files. The live calls only fill the small side cards and the
+Data Info "Live rate". Nothing on the charts depends on a live call, so the app works when
+Yahoo is down.
+
+### 2. Where each piece of data comes from
+
+| Data | Source | Code | Shown where |
 | --- | --- | --- | --- |
-| Type | Simple/Elman RNN | Gated Recurrent Unit | Long Short-Term Memory |
+| 10 years of daily close and volume | Yahoo chart API (`range=10y&interval=1d`) | `scripts/train-models.mjs` (`fetchTenYearChart`) | Main chart (black line), Predictions, Data Info |
+| Model predictions and 60-day forecast | Trained models | `scripts/train-models.mjs` | Dashed model lines, Predictions, Results |
+| Metrics (RMSE, MAE, MAPE, R²) | Computed on the test set | `computeMetrics()` | Results and Overview tables |
+| Earnings-call transcripts | Alpha Vantage `EARNINGS_CALL_TRANSCRIPT`, one fiscal quarter per request | `scripts/fetch-transcripts.mjs` | Cached in `data/transcripts/` (raw, not committed) |
+| Tone score per call | Word count on the transcript | `scripts/lib/tone.mjs`, `scripts/build-tone.mjs` | `data/transcripts/<SYMBOL>.tone.json` (committed); Data Info call table; Results ablation |
+| Call date (estimate) | Fiscal quarter end + 45 days | `scripts/lib/fiscal.mjs` | Data Info "Date source" column |
+| Live price and % change | Yahoo chart API (`range=5d`) | `app/api/quote/route.ts` | Data Info "Live rate" |
+| News and video headlines | Yahoo search API | `app/api/earnings/route.ts` | "Audio Files" KPI, "Data & Audio Summary" card |
+| Headline sentiment | Keyword count on headlines | `lib/sentiment.ts` | "Headline Sentiment" in the audio card |
+
+### 3. The earnings-call tone (how the transcript is used)
+
+1. **Download.** `fetch-transcripts` requests each **fiscal** quarter in the 10-year window.
+   Alpha Vantage labels quarters by fiscal year: NVDA `2024Q1` is the quarter ending April 2023.
+   Fiscal year ends: AAPL September, MSFT June, NVDA January, TSLA December.
+2. **Score.** Each transcript is scored with a finance word list:
+   `tone = (positive words − negative words) / (positive + negative)`, a value from −1 to +1.
+   The word list is a compact subset written for this thesis, not the full published dictionary.
+3. **Date.** Alpha Vantage does not return the call date, so the date is estimated as
+   fiscal quarter end + 45 days. This is conservative, so the model never sees a call before it
+   could have happened. The `EARNINGS` endpoint does return real `reportedDate` values; the
+   pipeline does not use them yet.
+4. **Daily signal.** The tone applies from the trading day **after** the call and stays until the
+   next call. Before the first call it is 0 (neutral).
+5. **Model input.** Each day becomes `[scaled close, tone]` (2 numbers). The model reads 60 days
+   of these and predicts the next day's close.
+6. **Forecast.** During the 60-day forecast, the tone stays at the last known value, because future
+   calls are unknown.
+
+Every stock is trained twice: **price only** and **price + tone**. The dashboard shows the
+price + tone run as the primary result, and the price-only run as the ablation.
+
+### 4. The models
+
+| | SRNN (baseline) | GRU (proposed) | LSTM (proposed) |
+| --- | --- | --- | --- |
+| Type | Simple (Elman) RNN | Gated Recurrent Unit | Long Short-Term Memory |
 | Role | Baseline | Proposed | Proposed |
 
-**Protocol (identical for all models):**
+**Shared protocol (identical for all models):**
 
-- **Dataset** — 10 years of daily closes per stock (~2,514 records) from
-  Yahoo Finance.
-- **Split** — chronological 80/20 (train 2016→2024, test 2024→2026); the test
-  segment always lies after training data.
-- **Scaling** — MinMax fitted on the **training** closes only (no leakage).
-- **Windows** — sliding window of 60 trading days → next-day close.
-- **Training** — Adam (lr 0.001), batch 32, 20 epochs, hidden units 32,
-  gradient-norm clip 1.0, seeded and reproducible.
-- **Evaluation** — one-step-ahead predictions on the held-out segment
-  (RMSE / MAE / MAPE / R²).
-- **Forecast** — the 60-day future path is generated iteratively: each
-  prediction is appended to the input window.
+- **Split:** chronological 80/20. The test segment always lies after the training segment.
+- **Scaling:** MinMax fitted on the training closes only (no leakage).
+- **Window:** 60 trading days → next-day close.
+- **Training:** Adam (lr 0.001), batch 32, 20 epochs, 32 hidden units, gradient-norm clip 1.0,
+  fixed seeds.
+- **Evaluation:** one-step-ahead predictions on the test segment (RMSE, MAE, MAPE, R²).
+- **Forecast:** 60 days, generated iteratively. Each prediction is appended to the window.
 
-The three architectures are implemented from scratch in TypeScript with full
-BPTT; `npm run check-gradients` verifies every gradient against finite
-differences (worst relative error < 1e-7).
+The three architectures are implemented from scratch in plain JavaScript (`scripts/train-models.mjs`)
+with full backpropagation through time. `npm run check-gradients` verifies every gradient against
+finite differences; the worst relative error is below 1e-6 for both feature sets.
 
-### Latest results (see the Results tab for all four stocks)
+## Results
 
-| Stock | SRNN R² | GRU R² | LSTM R² |
+Test-set R² for the **price + tone** models (primary run). Data: 2016-11 → 2026-11.
+
+| Stock | SRNN R² | GRU R² | LSTM R² | PERSIST R² |
+| --- | --- | --- | --- | --- |
+| AAPL | 0.863 | **0.973** | 0.936 | 0.989 |
+| MSFT | 0.939 | **0.961** | 0.924 | 0.976 |
+| NVDA | 0.856 | **0.950** | 0.920 | 0.983 |
+| TSLA | 0.901 | **0.939** | 0.886 | 0.951 |
+
+**Tone ablation** (same models; Δ = price+tone R² minus price-only R², so a positive Δ means the tone helped):
+
+| Stock | SRNN Δ | GRU Δ | LSTM Δ |
 | --- | --- | --- | --- |
-| AAPL | 0.842 | **0.951** | 0.947 |
-| MSFT | 0.921 | **0.950** | 0.935 |
-| NVDA | 0.907 | **0.916** | 0.880 |
-| TSLA | 0.932 | **0.950** | 0.927 |
+| AAPL | −0.004 | +0.013 | −0.014 |
+| MSFT | +0.013 | +0.004 | −0.016 |
+| NVDA | −0.073 | +0.027 | −0.026 |
+| TSLA | −0.010 | +0.014 | −0.017 |
 
-GRU (proposed) achieves the best R² on all four stocks; LSTM is close behind;
-the SRNN baseline trails clearly — supporting the thesis that gated
-architectures model stock dynamics better than a simple recurrent network.
+**How to read these numbers:**
 
-## Regenerating the artifacts
+- **GRU is the best learned model on every stock**, and its R² rises with the tone on every stock.
+  LSTM's R² falls on every stock. Both are single-seed runs on four stocks, so differences of about
+  ±0.01 are within what another seed could change. Treat the pattern as suggestive, not proven.
+- **PERSIST** (tomorrow's price = today's close) has a higher R² than every model. The R² values
+  look high mainly because prices change slowly, not because the models predict well.
+- **Direction is close to a coin flip.** On the test sets, the models predict the sign of the next
+  day's move correctly about 47–51% of the time. A rule that always says "up" gets 50–54%, depending
+  on the stock (the share of up days in the test set), so the models do no better than that rule.
+- **Event study (tone vs price after the call).** Using the reported dates from Alpha Vantage's
+  `EARNINGS` endpoint, the correlation between a call's tone and the next day's return is 0.16
+  (160 calls). Over three days it is 0.07. Per stock it ranges from −0.13 (AAPL) to +0.24 (MSFT).
+  This is weak and inconsistent, and not enough to predict prices. This check is not in the
+  repository yet.
 
-```bash
-npm run train          # retrains all 4 stocks in parallel (~7-10 min)
-node scripts/build-index.mjs   # only needed after per-stock runs
-```
+## What the models can and cannot do
 
-Per-stock / debug runs:
+- They predict a **price level**, one day ahead. The 60-day path is a model extrapolation, and its
+  error grows with the horizon.
+- They do **not** predict whether the price will go up or down with reliable accuracy.
+- The tone is a single number per quarter, held for about three months, so it carries no daily
+  information. It cannot represent a one-day reaction to a call.
+- The tone comes from a simple word list, and most values are positive (per-stock means 0.39 to
+  0.75), so the feature has little variance.
 
-```bash
-node scripts/train-models.mjs --stock AAPL --epochs 2   # smoke test
-node scripts/train-models.mjs --kinds srnn              # one architecture
-node scripts/check-gradients.mjs                        # BPTT gradient check
-```
+## Limitations and known issues
 
-Artifacts are deterministic (fixed seeds): same inputs → same numbers.
+- **Call dates are estimated** (+45 days). The reported dates are available from Alpha Vantage's
+  `EARNINGS` endpoint and would be more accurate.
+- The most recent quarters (AAPL 2026 Q4, MSFT 2027 Q1, TSLA 2026 Q3) have an estimated call date of
+  14 Nov 2026, which is after the last trading day in the data, so their tone is not used yet.
+- **Single seed.** The ablation differences need multiple seeds before any claim is made.
+- **Tone is not a sentiment model.** It is a word count; there is no NLP model and no audio is
+  processed.
+- **The tables are not comparable with older versions of this README:** the 10-year window has moved
+  forward, and the tone feature has been added.
+- **`FMP_API_KEY`** in `.env.example` is no longer used by the code.
+
+## Deploying to Vercel
+
+Push to GitHub and import the repository on [vercel.com](https://vercel.com). No configuration is
+needed. The API routes are serverless functions, and the committed JSON artifacts are bundled with
+them. No API key is needed on Vercel. Vercel cannot run training (it has a time limit and a read-only
+filesystem), so retrain locally and commit the updated `data/results/` files.
 
 ## API routes
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/predict?symbol=AAPL` | Full artifact: history, metrics, test predictions, 60-day forecast |
-| `GET /api/dataset-index` | Cross-stock dataset + metrics summary |
-| `GET /api/quote?symbol=AAPL` | Live rate from Yahoo Finance (Data Info tab) |
-| `GET /api/earnings?symbol=AAPL` | News + video links (audio summary card) |
+| `GET /api/predict?symbol=AAPL` | Full artifact: history, metrics, test predictions, 60-day forecast, tone calls |
+| `GET /api/dataset-index` | Cross-stock dataset and metrics summary |
+| `GET /api/quote?symbol=AAPL` | Live price from Yahoo Finance (Data Info tab) |
+| `GET /api/earnings?symbol=AAPL` | News and video links (audio summary card) |
 
-## Data sources — where the API data comes from
+Bad symbols return a 404 with the list of available stocks. Live calls have a 10-second timeout and
+one retry. `/api/earnings` caches each symbol for 10 minutes.
 
-```
-Yahoo Finance chart API (10y daily)
-   │  npm run train  (scripts/train-models.mjs)
-   ▼
-data/results/<SYMBOL>.json + _index.json   (committed to git)
-   │  static import
-   ▼
-/api/predict, /api/dataset-index           ← offline, no network
-
-Yahoo Finance (chart + search) ──► /api/quote, /api/earnings   ← live, at request time
-Financial Modeling Prep (optional) ──► /api/earnings (transcript)
-```
-
-| Route / step | Code | Source | What is used |
-| --- | --- | --- | --- |
-| `npm run train` | `scripts/train-models.mjs` | `https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=10y&interval=1d` | Daily close history → model training, metrics, forecast |
-| `/api/predict` | `app/api/predict/route.ts` | Local file `data/results/{SYMBOL}.json` | Whole artifact (history, metrics, test predictions, 60-day forecast) |
-| `/api/dataset-index` | `app/api/dataset-index/route.ts` | Local file `data/results/_index.json` | Cross-stock dataset + metrics summary |
-| `/api/quote` | `app/api/quote/route.ts` → `fetchChart()` in `lib/yahoo.ts` | `https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=5d&interval=1d` | `meta.regularMarketPrice`, `chartPreviousClose`, `longName`, `currency`, `regularMarketTime` → price + % change |
-| `/api/earnings` (news/videos) | `app/api/earnings/route.ts` → `fetchSearch()` in `lib/yahoo.ts` | `https://query1.finance.yahoo.com/v1/finance/search?q={SYMBOL}&newsCount=8` | News headlines + video links, company name for the YouTube query |
-| Transcript pipeline (`npm run train` / `npm run fetch-transcripts`) | `scripts/fetch-transcripts.mjs`, `scripts/build-tone.mjs` | `https://www.alphavantage.co/query?function=EARNINGS_CALL_TRANSCRIPT&symbol={SYMBOL}&quarter={YYYY}Q{n}` | Earnings-call transcripts → one tone score per call (see "Earnings-call tone" below) |
-
-Notes:
-
-- **API keys** — Yahoo needs none. The Alpha Vantage key (`ALPHAVANTAGE_API_KEY`)
-  is only used locally by `npm run fetch-transcripts`; it is never sent to the browser.
-  `/api/earnings` no longer calls FMP.
-- **Offline vs live** — `/api/predict` and `/api/dataset-index` never touch the
-  network; the numbers only change after `npm run train` is re-run.
-- **Resilience** — Yahoo calls send a browser User-Agent, time out after 10s and
-  retry once. `/api/quote` returns `502` on failure; `/api/earnings` falls back
-  to empty news/videos and caches each symbol's response in memory for 10 min.
-- `lib/yahoo.ts` also has `fetchQuoteSummary()` (cookie + crumb flow for the
-  `quoteSummary` endpoint); it is not used by any route at the moment.
-
-### When do the JSON artifacts update?
-
-**Only manually.** There is no cron job, GitHub Action or scheduled function —
-`data/results/*.json` change only when someone runs `npm run train` and commits
-the result. Until then the dashboard keeps showing the data (and the 60-day
-forecast) from the last training run.
-
-What `npm run train` does:
-
-1. `scripts/train-all.mjs` starts one Node process per stock (AAPL, MSFT,
-   NVDA, TSLA), each running `scripts/train-models.mjs --stock <SYMBOL>`.
-2. `fetchTenYearChart()` downloads 10 years of daily data from
-   `https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=10y&interval=1d`
-   (4 attempts, 20s timeout each — internet is needed for this step only).
-3. `buildSeries()` keeps date / close / volume per trading day; the models are
-   trained and evaluated, and the 60-day forecast is generated.
-4. The result is written to `data/results/<SYMBOL>.json`, then
-   `scripts/build-index.mjs` rebuilds `data/results/_index.json`.
-
-Takes ~7-10 minutes. After that:
-
-- **Local dev** — `/api/predict` serves the new files right away (dev server
-  reloads them).
-- **Vercel** — the JSON is bundled at build time, so commit + push the updated
-  files; the new data goes live after the redeploy.
-- **README** — metrics change with the new data, so update the results table
-  above as well.
-
-To see how fresh the current data is, check `generatedAt` and `dataPeriod.end`
-in any `data/results/<SYMBOL>.json` (or in `_index.json`).
-
-## FAQ — transcript, training data, fetch code
-
-### Earnings-call tone — how are transcripts used?
-
-Each earnings call is turned into one **tone** number in [−1, +1]:
-
-1. `npm run fetch-transcripts` downloads the transcript of every **fiscal** quarter (from the
-   first quarter in the 10-year window up to the last reported one) from Alpha Vantage
-   (`EARNINGS_CALL_TRANSCRIPT`) and caches the raw JSON in `data/transcripts/<SYMBOL>/`.
-   Alpha Vantage labels quarters by fiscal year, e.g. NVDA `2024Q1` is the quarter ending April 2023
-   (fiscal years end: AAPL Sep, MSFT Jun, NVDA Jan, TSLA Dec — `scripts/lib/fiscal.mjs`).
-   It is resumable and stops when the free daily quota (25 requests) is hit; about 170 requests are
-   needed for all four stocks, so the full history takes several days.
-2. `npm run build-tone` (also run first by `npm run train`) scores each transcript with a
-   finance word list (`scripts/lib/tone.mjs`): `tone = (positive − negative) / (positive + negative)`.
-   Alpha Vantage does not return the call date, so it is estimated as **fiscal quarter end + 45 days**
-   (labelled "estimated" on the Data Info tab). It prints the coverage per stock; train only once
-   coverage is high, because quarters without a transcript count as neutral.
-   Result: `data/transcripts/<SYMBOL>.tone.json` (small, committed).
-3. `scripts/train-models.mjs` trains each model twice: **price only** and **price + tone**.
-   The tone is applied from the trading day *after* the call and held until the next call,
-   so the model never sees a call before it happened. Results are shown on the Results tab
-   ("Does the Earnings-Call Tone Help?").
-
-The word list is a compact subset written for this thesis, not the full published dictionary.
-Quarters with no transcript are neutral (tone 0).
-
-### Is the news data used to train the models?
-
-**No.** News headlines and the "Audio" sentiment are display-only. The only thing taken from
-transcripts is the tone above. The price models use the **daily close** (plus tone in the
-transcript run); the 60-day window of scaled closes is the input and the next day's close is
-the target (`buildSeries()` and `trainOneModel()`). Volume is stored for display only.
-
-### Where in the code is the data fetched?
-
-| Step | File (lines) | What it does |
-| --- | --- | --- |
-| Browser → API routes | `app/page.tsx` (108, 123, 130-133) | `fetchApi()` calls `/api/predict`, `/api/dataset-index`, `/api/quote`, `/api/earnings` |
-| Trained results | `app/api/predict/route.ts`, `app/api/dataset-index/route.ts` | Import `data/results/*.json` — no network call |
-| Shared Yahoo fetch | `lib/yahoo.ts` (`safeFetch` 12, `fetchChart` 88, `fetchSearch` 151) | Browser User-Agent, 10s timeout, 1 retry |
-| Live price | `app/api/quote/route.ts` → `fetchChart(symbol, "5d", "1d")` | Yahoo chart API → price, previous close, % change |
-| News + videos | `app/api/earnings/route.ts` → `fetchSearch(symbol)` | Yahoo search API → headlines and video links |
-| Transcript (tone) | `scripts/fetch-transcripts.mjs`, `scripts/build-tone.mjs` | Alpha Vantage `EARNINGS_CALL_TRANSCRIPT` → one tone score per call (local, used for training only) |
-| Training data | `scripts/train-models.mjs` (`fetchTenYearChart`, 122-145) | Yahoo chart API, 10y daily → model training |
-
-### How does the "audio" data work?
-
-**Short answer: no real audio is downloaded, played or processed.** There is no
-audio-fetching, speech-to-text or audio-parsing code in the project. Everything
-labelled "audio" on the dashboard is derived from **news / video headlines**
-returned by Yahoo Finance search.
-
-```
-Yahoo search API  /v1/finance/search?q={SYMBOL}&newsCount=8&videosCount=0
-   │  lib/yahoo.ts → fetchSearch()          (title, publisher, link per item)
-   ▼
-/api/earnings  (app/api/earnings/route.ts, lines 101-112)
-   │  link contains "/video/" or publisher contains "Video" → videos (max 4)
-   │  everything else                                       → news   (max 5)
-   ▼
-app/page.tsx (lines 141-149)
-   │  titles = videos + news
-   │  files = titles.length · hours = files × 2 · sentiment = classifySentiment(titles)
-   ▼
-KpiRow "Audio Files"  +  DataAudioCard "Data & Audio Summary"
-```
-
-| Dashboard field | How it is computed | Code |
-| --- | --- | --- |
-| Audio Files (KPI row) | Number of news + video headlines (0-9) | `app/page.tsx` 141-149 → `components/dashboard/KpiRow.tsx` 65-69 |
-| Audio / Media Files | Same count as above | `components/dashboard/DataAudioCard.tsx` |
-| Audio Duration (est.) | `files × 2` hours — assumes a recorded earnings webcast is ~2 h; not measured | `app/page.tsx` line 146 |
-| Headline Sentiment | Keyword count per headline: each positive word (beat, surge, growth…) +1, each negative word (miss, fall, loss…) −1; score > 0 → positive, < 0 → negative, else neutral; shown as % of headlines | `lib/sentiment.ts` |
-| Transcript | Not shown on the audio card; used for training only, as the tone score (see the tone FAQ above) | `scripts/build-tone.mjs` |
-
-Notes:
-
-- Yahoo is asked for `videosCount=0`, so "videos" are just news items whose
-  link looks like a video page — no audio/video stream is fetched.
-- `/api/earnings` also returns `youtubeQuery` (e.g. "Apple Inc. AAPL earnings
-  call"), but the UI does not use it.
-- The sentiment is a simple word list, not an NLP model, and it runs on
-  headlines only. None of this data is used in model training.
-
-To work with **real** earnings-call audio you would need to: (1) get the
-audio/webcast URL for each call (e.g. from the company's investor-relations page
-or a paid data provider), (2) convert speech to text (e.g. with a Whisper
-model), and (3) run sentiment on that transcript. Transcripts are already fetched
-through Alpha Vantage for the tone model (see the tone FAQ above); the audio card
-itself still shows only news/video counts.
-
-## Structure
+## Project structure
 
 ```
 scripts/
-  train-models.mjs      SRNN/GRU/LSTM training pipeline (fetch → split → train → evaluate → write)
-  check-gradients.mjs   finite-difference verification of the BPTT implementations
-  build-index.mjs       rebuilds data/results/_index.json after per-stock runs
-  fetch-transcripts.mjs downloads earnings-call transcripts (Alpha Vantage, needs ALPHAVANTAGE_API_KEY)
-  build-tone.mjs       transcripts → one tone score per call (data/transcripts/<SYMBOL>.tone.json)
-  lib/tone.mjs         finance word-list tone scorer
-data/results/           committed artifacts (one JSON per stock + _index.json)
+  train-models.mjs        SRNN / GRU / LSTM training (price-only and price+tone), evaluation, forecast
+  train-all.mjs           runs train-models for all stocks in parallel, then build-index
+  check-gradients.mjs     finite-difference check of the backprop (D=1 and D=2)
+  build-index.mjs         rebuilds data/results/_index.json
+  fetch-transcripts.mjs   earnings-call transcripts from Alpha Vantage (resumable)
+  build-tone.mjs          transcripts → one tone number per call, with coverage report
+  lib/fiscal.mjs          fiscal year-ends, quarter ends, estimated call dates
+  lib/tone.mjs            word-list tone scorer
+data/
+  results/                committed training artifacts (one JSON per stock + _index.json)
+  transcripts/
+    <SYMBOL>.tone.json    committed tone per call
+    <SYMBOL>/             raw transcripts (git-ignored)
 app/
-  page.tsx              dashboard (header, sidebar tabs, all sections)
-  layout.tsx, globals.css
-  api/predict/route.ts        serves the trained artifacts
-  api/dataset-index/route.ts  serves the cross-stock summary
-  api/quote/route.ts          live Yahoo rate
-  api/earnings/route.ts       news + video links (audio summary card)
+  page.tsx                dashboard shell (header, sidebar, all sections)
+  api/predict/            serves a stock's artifact
+  api/dataset-index/      serves the cross-stock summary
+  api/quote/              live price (Yahoo)
+  api/earnings/           news and video links (Yahoo)
 components/dashboard/
-  Sidebar.tsx           section navigation (Overview … About)
-  KpiRow.tsx            5 KPI cards (data, records, audio, horizon, models)
-  charts.tsx            history+prediction chart, next-60 chart, test-set chart
-  tables.tsx            performance comparison + prediction tables
-  DataAudioCard.tsx     data & audio summary
-  tabs.tsx              Data Info / Models / Predictions / Results / About
-  icons.tsx, ui.tsx     icons and shared UI helpers
+  tabs.tsx                Data Info, Models, Predictions, Results, About
+  charts.tsx              history + prediction chart, 60-day chart, test-set chart
+  KpiRow.tsx, DataAudioCard.tsx, tables.tsx, Sidebar.tsx, ui.tsx, icons.tsx
 lib/
-  yahoo.ts              Yahoo fetch helpers (chart endpoint, retries)
-  sentiment.ts          keyword sentiment for headlines
-  types.ts              shared types
-backend/                (legacy Python FastAPI service — not required; kept for reference)
+  types.ts                shared types
+  yahoo.ts                Yahoo fetch helpers
+  sentiment.ts            keyword sentiment for headlines
+backend/                  legacy Python service, not used; kept for reference
 ```
 
-## Workflow
+## Environment
 
-This section explains, step by step, what happens when the app runs.
+| Variable | Used by | Where |
+| --- | --- | --- |
+| `ALPHAVANTAGE_API_KEY` | `fetch-transcripts` only | `.env.local` on your machine. Never sent to the browser. |
 
-### 0. The big picture
-
-```
-Browser (http://localhost:3000)
-   │  picks a stock and a tab
-   ▼
-Next.js frontend (app/page.tsx)
-   │  fetch("/api/predict?symbol=…")   ← artifact with everything the charts need
-   │  + optional /api/quote and /api/earnings (side data, non-blocking)
-   ▼
-API routes (app/api/*)
-   │  predict / dataset-index  → read the precomputed JSON artifacts
-   │  quote / earnings         → call Yahoo Finance live
-   ▼
-React renders the dashboard
-```
-
-The heavy lifting (model training) happens **offline** via `npm run train`;
-the running app only serves the committed artifacts, which is why it is fast
-and works on Vercel without any ML runtime.
-
-### 1. Selecting a stock
-
-The header dropdown lists the four trained stocks (AAPL, MSFT, NVDA, TSLA).
-Switching a symbol re-fetches `/api/predict` — a few dozen KB of JSON, so
-tab switches are instant. The **Data Period** dropdown zooms the main chart
-(1/3/5/10 years) without refetching.
-
-### 2. The experiment pipeline (`npm run train`)
-
-1. **Fetch** — `scripts/train-models.mjs` downloads 10y of daily closes per
-   stock from Yahoo's chart endpoint (retries on flaky networks).
-2. **Split** — the first 80% of records train the models; the last 20% are
-   held out. The scaler is fitted on train prices only.
-3. **Windowing** — each training sample is a 60-day close window mapped to
-   the next day's close.
-4. **Train** — SRNN, GRU and LSTM (hidden 32, Adam, 20 epochs, batch 32,
-   clipped gradients, fixed seeds) — identical budget for a fair comparison.
-5. **Evaluate** — one-step-ahead predictions on the test segment; RMSE, MAE,
-   MAPE and R² are computed on real (inverse-scaled) prices.
-6. **Forecast** — each model predicts day+1 from the last 60 closes, its
-   prediction is appended to the window, and the process repeats for 60
-   trading days (this is what makes the three dashed paths diverge).
-7. **Write** — `data/results/<SYMBOL>.json` (history, metrics, test series,
-   future forecast) and `_index.json` (cross-stock summary).
-
-### 3. Rendering the dashboard
-
-- **Overview tab** — KPI row (period, records, audio files, horizon, models),
-  the main chart (historical black line + three dashed model forecasts, with
-  a vertical marker and "Next 60 Days" label), the next-60-days panel, the
-  performance comparison table (best value bold per column), the data & audio
-  summary, and a sample of the 60-day prediction table.
-- **Data Info** — dataset facts, the train/test split with dates, and the
-  stock-selection criteria table (annual volatility, 10-year change, price
-  range) plus the live rate from Yahoo.
-- **Models** — the three architectures and the shared training configuration.
-- **Predictions** — the full 60-day table and a larger forecast chart.
-- **Results** — metrics table, the test-set actual-vs-predicted chart, and
-  the best model per stock.
-- **About** — methodology recap and the disclaimer.
-
-### 4. Side data (optional, non-blocking)
-
-`/api/quote` (live rate shown on Data Info) and `/api/earnings` (counts the
-media items for the Audio Files card; sentiment is a simple keyword classifier
-over headlines) call Yahoo at request time. If they fail, the dashboard still
-renders fully — those cards show "—".
-
-### 5. Resilience
-
-- Artifacts are static — the core dashboard never depends on Yahoo.
-- Live calls have 10s timeouts with one retry.
-- Bad symbols return a clear 404 with the list of available stocks.
---------------------------------------------------------------
-
-1. Transcript kyun nahi aa raha? ChatGPT sahi keh raha hai. Maine aapki .env.local wali FMP key se API ko direct call karke check kiya:
-
-Code jo purana v3 transcript endpoint call karta hai, wo 403 "Legacy Endpoint" error deta hai. Ye endpoint sirf un users ke liye hai jinka subscription 31 Aug 2025 se pehle ka hai.
-FMP ka naya endpoint 402 "Restricted" deta hai, yaani transcript ke liye paid plan chahiye.
-Isliye API response me transcript: null aata hai.
-Dashboard par transcript dikhane wala koi component bhi nahi hai. "Audio Files" card sirf news aur video ke titles ginta hai, aur "hours" sirf ek andaza hai (files × 2).
-2. Kya transcript ya news model training me use hota hai? Nahi. SRNN, GRU aur LSTM sirf daily close price par train hote hain: pichhle 60 din ke close se agle din ka close predict hota hai. News, sentiment aur transcript sirf dashboard par dikhane ke liye hain. Training, results aur forecast me inka koi role nahi hai. Thesis me bhi ye clearly likhna theek rahega.
-
-3. API se data fetch karne wala code kahan hai?
-
-Browser se API call: app/page.tsx:108-133
-Yahoo se data lene wale functions: lib/yahoo.ts (fetchChart, fetchSearch)
-Live price: app/api/quote/route.ts
-News aur transcript: app/api/earnings/route.ts
-Training ke liye Yahoo se data: scripts/train-models.mjs:122-145
-README me inki puri table hai, kis line par kya hota hai.
-
-Transcript chahiye to teen kaam karne padenge: FMP ka paid plan lena, code ko naye stable endpoint par shift karna, aur transcript dikhane ke liye UI component banana. Agar aap chahte ho to code wala hissa main kar deta hoon.
-
-README edit ke time file disk par kisi aur ne bhi change ki thi (shayad aapne). Mera section sahi jagah add ho gaya hai, par README ko preview me render karke check nahi kiya hai.
-
-
-
+Yahoo needs no key.

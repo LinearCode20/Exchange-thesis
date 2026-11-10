@@ -1,6 +1,6 @@
 {
   "symbol": "AAPL",
-  "generatedAt": "2026-10-27T08:13:16.917Z",
+  "generatedAt": "2026-11-10T09:51:46.806Z",
   "calls": [
     {
       "quarter": 3,
@@ -154,6 +154,231 @@
       "tone": 0.664,
       "uncertainty": 0.00755,
       "words": 7546
+    },
+    {
+      "quarter": 4,
+      "year": 2020,
+      "callDate": "2020-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.656,
+      "uncertainty": 0.00673,
+      "words": 8472
+    },
+    {
+      "quarter": 1,
+      "year": 2021,
+      "callDate": "2021-02-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.737,
+      "uncertainty": 0.00995,
+      "words": 7334
+    },
+    {
+      "quarter": 2,
+      "year": 2021,
+      "callDate": "2021-05-15",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.774,
+      "uncertainty": 0.00787,
+      "words": 7497
+    },
+    {
+      "quarter": 3,
+      "year": 2021,
+      "callDate": "2021-08-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.667,
+      "uncertainty": 0.00813,
+      "words": 7376
+    },
+    {
+      "quarter": 4,
+      "year": 2021,
+      "callDate": "2021-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.65,
+      "uncertainty": 0.00761,
+      "words": 7492
+    },
+    {
+      "quarter": 1,
+      "year": 2022,
+      "callDate": "2022-02-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.698,
+      "uncertainty": 0.00781,
+      "words": 7431
+    },
+    {
+      "quarter": 2,
+      "year": 2022,
+      "callDate": "2022-05-15",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.458,
+      "uncertainty": 0.00897,
+      "words": 7579
+    },
+    {
+      "quarter": 3,
+      "year": 2022,
+      "callDate": "2022-08-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.122,
+      "uncertainty": 0.00916,
+      "words": 7207
+    },
+    {
+      "quarter": 4,
+      "year": 2022,
+      "callDate": "2022-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.427,
+      "uncertainty": 0.00701,
+      "words": 6990
+    },
+    {
+      "quarter": 1,
+      "year": 2023,
+      "callDate": "2023-02-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.268,
+      "uncertainty": 0.00702,
+      "words": 7122
+    },
+    {
+      "quarter": 2,
+      "year": 2023,
+      "callDate": "2023-05-15",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.394,
+      "uncertainty": 0.00652,
+      "words": 7973
+    },
+    {
+      "quarter": 3,
+      "year": 2023,
+      "callDate": "2023-08-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.521,
+      "uncertainty": 0.00742,
+      "words": 7544
+    },
+    {
+      "quarter": 4,
+      "year": 2023,
+      "callDate": "2023-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.618,
+      "uncertainty": 0.00535,
+      "words": 7847
+    },
+    {
+      "quarter": 1,
+      "year": 2024,
+      "callDate": "2024-02-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.583,
+      "uncertainty": 0.00764,
+      "words": 7197
+    },
+    {
+      "quarter": 2,
+      "year": 2024,
+      "callDate": "2024-05-15",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.47,
+      "uncertainty": 0.00855,
+      "words": 7721
+    },
+    {
+      "quarter": 3,
+      "year": 2024,
+      "callDate": "2024-08-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.604,
+      "uncertainty": 0.0087,
+      "words": 7245
+    },
+    {
+      "quarter": 4,
+      "year": 2024,
+      "callDate": "2024-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.787,
+      "uncertainty": 0.00803,
+      "words": 7343
+    },
+    {
+      "quarter": 1,
+      "year": 2025,
+      "callDate": "2025-02-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.641,
+      "uncertainty": 0.008,
+      "words": 7123
+    },
+    {
+      "quarter": 2,
+      "year": 2025,
+      "callDate": "2025-05-15",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.402,
+      "uncertainty": 0.01187,
+      "words": 7581
+    },
+    {
+      "quarter": 3,
+      "year": 2025,
+      "callDate": "2025-08-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.813,
+      "uncertainty": 0.00923,
+      "words": 7148
+    },
+    {
+      "quarter": 4,
+      "year": 2025,
+      "callDate": "2025-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.748,
+      "uncertainty": 0.00786,
+      "words": 7128
+    },
+    {
+      "quarter": 1,
+      "year": 2026,
+      "callDate": "2026-02-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.813,
+      "uncertainty": 0.0079,
+      "words": 6707
+    },
+    {
+      "quarter": 2,
+      "year": 2026,
+      "callDate": "2026-05-15",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.717,
+      "uncertainty": 0.00843,
+      "words": 8067
+    },
+    {
+      "quarter": 3,
+      "year": 2026,
+      "callDate": "2026-08-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.672,
+      "uncertainty": 0.00971,
+      "words": 8344
+    },
+    {
+      "quarter": 4,
+      "year": 2026,
+      "callDate": "2026-11-14",
+      "dateSource": "fiscal-quarter-end+45d",
+      "tone": 0.61,
+      "uncertainty": 0.00702,
+      "words": 9548
     }
   ]
 }

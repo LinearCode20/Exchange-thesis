@@ -53,16 +53,30 @@ differences (worst relative error < 1e-7).
 
 ### Latest results (see the Results tab for all four stocks)
 
-| Stock | SRNN R² | GRU R² | LSTM R² |
-| --- | --- | --- | --- |
-| AAPL | 0.842 | **0.951** | 0.947 |
-| MSFT | 0.921 | **0.950** | 0.935 |
-| NVDA | 0.907 | **0.916** | 0.880 |
-| TSLA | 0.932 | **0.950** | 0.927 |
+Test-set R² for the **price + earnings-call tone** models (primary run). Data: 2016-11-10 → 2026-11-09.
 
-GRU (proposed) achieves the best R² on all four stocks; LSTM is close behind;
-the SRNN baseline trails clearly — supporting the thesis that gated
-architectures model stock dynamics better than a simple recurrent network.
+| Stock | SRNN R² | GRU R² | LSTM R² | PERSIST R² |
+| --- | --- | --- | --- | --- |
+| AAPL | 0.863 | **0.973** | 0.936 | 0.989 |
+| MSFT | 0.939 | **0.961** | 0.924 | 0.976 |
+| NVDA | 0.856 | **0.950** | 0.920 | 0.983 |
+| TSLA | 0.901 | **0.939** | 0.886 | 0.951 |
+
+**Tone ablation (same models, price only vs price + tone):**
+
+| Stock | SRNN Δ | GRU Δ | LSTM Δ |
+| --- | --- | --- | --- |
+| AAPL | −0.004 | +0.013 | −0.014 |
+| MSFT | +0.013 | +0.004 | −0.016 |
+| NVDA | −0.073 | +0.027 | −0.026 |
+| TSLA | −0.010 | +0.014 | −0.017 |
+
+Reading the results honestly:
+
+- GRU is the best of the three learned models on all four stocks, and it is the only model whose R² goes up with the tone feature on every stock. LSTM goes down on every stock.
+- These are **single-seed** runs on four stocks, so the differences of ±0.01 are within what a different seed could change. The pattern is suggestive, not conclusive.
+- The **PERSIST baseline** (tomorrow's prediction = today's close) has a higher R² than every model on every stock. The learned models do not yet beat this naive baseline.
+- The numbers are not comparable with the earlier table in this README: the 10-year window has moved forward since then, and the tone feature was added.
 
 ## Regenerating the artifacts
 
@@ -184,6 +198,18 @@ Each earnings call is turned into one **tone** number in [−1, +1]:
 
 The word list is a compact subset written for this thesis, not the full published dictionary.
 Quarters with no transcript are neutral (tone 0).
+
+Limitations:
+
+- **Call dates are estimated**, because Alpha Vantage does not return them. The fiscal quarter end
+  + 45 days is conservative (no look-ahead), but it also means a tone can be used later than the
+  real call. For the most recent quarters (AAPL 2026 Q4, MSFT 2027 Q1, TSLA 2026 Q3) the estimate is
+  14 Nov 2026, which is after the last trading day in the current dataset, so their tone is not used
+  in training yet.
+- The tone is held constant for the 60-day forecast, so the forecast cannot react to a new call.
+- The tone values are mostly positive: the per-stock mean is 0.39 (TSLA) to 0.75 (NVDA), with a few
+  negative calls (lowest −0.14, TSLA). Management presentations are upbeat, so the feature has
+  limited variance, which limits what the model can learn from it.
 
 ### Is the news data used to train the models?
 

@@ -100,6 +100,11 @@ async function main() {
         cached += 1;
         continue;
       }
+      // Estimated call date still in the future → nothing to fetch yet; don't spend a request.
+      if (Date.parse(callDate) > now.getTime()) {
+        console.log(`  ${year}Q${quarter}  call not due yet (est. ${callDate}) — skipped, no request used`);
+        continue;
+      }
 
       let json;
       try {
